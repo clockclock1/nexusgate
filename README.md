@@ -42,7 +42,7 @@
 
 - **Rust**：Tokio、Axum、SQLx(SQLite)、DashMap、Tracing、JWT / bcrypt
 - **前端**：React 18、TypeScript、Vite、Ant Design、ECharts、Zustand
-- **部署**：二进制发布、Docker / Compose、Systemd、Nginx、Kubernetes
+- **部署**：`ng` 一键管理脚本、二进制发布、Docker / Compose、Systemd、Nginx、Kubernetes
 
 默认端口：
 
@@ -58,7 +58,97 @@
 
 ---
 
-## 快速开始（源码）
+## 推荐安装（Linux `ng` 管理脚本）
+
+生产环境推荐用简称命令 **`ng`** 管理服务端/客户端：支持安装、启停、配置、从 GitHub 更新、完全卸载，并写入 **systemd 开机自启**。
+
+### 1. 安装管理命令
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
+```
+
+安装后可随时唤起：
+
+```bash
+sudo ng            # 交互菜单
+sudo ng help       # 查看全部命令
+sudo ng status     # 查看运行状态
+```
+
+也可从本地仓库安装：
+
+```bash
+sudo bash scripts/install-ng.sh
+```
+
+### 2. 安装并启动服务端（公网机器）
+
+```bash
+sudo ng install-server
+```
+
+会自动：
+
+- 从 GitHub Release 下载最新 `nexusgate-server-linux-amd64|arm64`
+- 写入配置与 systemd 单元并 **enable --now**（开机自启）
+- 默认监听 API `3000` / Control `7000` / Data `7001` / Gateway `8080`
+
+### 3. 安装并启动客户端（内网机器）
+
+```bash
+sudo ng install-client
+sudo ng config-client   # 填写 node_id、token、server 公网地址
+sudo ng restart client
+```
+
+`node_id` / `token` 在服务端管理面板「创建节点」后获得（或调 API `/api/nodes`）。
+
+### 4. 日常运维
+
+```bash
+sudo ng start all
+sudo ng stop server
+sudo ng restart client
+sudo ng update-server      # 拉 GitHub 最新服务端并重启
+sudo ng update-client
+sudo ng config-server
+sudo ng logs server
+sudo ng uninstall-client   # 完全卸载客户端
+sudo ng uninstall-server   # 完全卸载服务端（含数据）
+sudo ng uninstall-all      # 清空全部
+sudo ng self-update        # 更新 ng 脚本自身
+```
+
+| 命令 | 说明 |
+|------|------|
+| `install-server` / `install-client` | 安装并 systemd 开机自启 |
+| `start` / `stop` / `restart [server\|client\|all]` | 启停控制 |
+| `update-server` / `update-client` | 从 GitHub Release 更新二进制 |
+| `config-server` / `config-client` | 编辑配置并可选重启 |
+| `uninstall-server` / `uninstall-client` | **完全卸载**（配置/数据/单元） |
+| `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
+| `status` / `logs` | 状态与日志 |
+| `self-update` | 更新管理脚本 |
+
+落盘位置：
+
+```text
+/usr/local/bin/ng
+/opt/nexusgate/bin/p2p-server
+/opt/nexusgate/bin/p2p-edge
+/opt/nexusgate/server/config/server.toml
+/opt/nexusgate/client/config/edge.toml
+/opt/nexusgate/data/
+/etc/systemd/system/nexusgate-server.service
+/etc/systemd/system/nexusgate-edge.service
+```
+
+> 二进制安装/更新依赖 Release 资产名：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`。请先在仓库发布 Release（Actions 会自动挂载产物）。
+
+---
+
+## 快速开始（源码开发）
 
 ```bash
 # 1) Server
@@ -120,47 +210,17 @@ Dashboard / Server / Nodes / Services / Routes / P2P / Connections / Traffic / L
 
 ---
 
-## Linux 一键管理（`ng`）
+## 其它部署方式
 
-在任意 Linux 主机上安装简称命令 `ng`，之后可随时唤起管理菜单：
+### A. `ng` 脚本（推荐，见上文）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
-sudo ng          # 交互菜单
-sudo ng help     # 命令帮助
+sudo ng install-server
+sudo ng install-client
 ```
 
-| 命令 | 说明 |
-|------|------|
-| `sudo ng install-server` | 安装服务端，写入 systemd 并开机自启 |
-| `sudo ng install-client` | 安装客户端，写入 systemd 并开机自启 |
-| `sudo ng start\|stop\|restart [server\|client\|all]` | 启停控制 |
-| `sudo ng update-server` / `update-client` | 从 GitHub Release 拉最新二进制并重启 |
-| `sudo ng config-server` / `config-client` | 编辑配置并可选重启 |
-| `sudo ng uninstall-server` / `uninstall-client` | **完全卸载**（含配置/数据/单元） |
-| `sudo ng uninstall-all` | 清空 `/opt/nexusgate`、systemd、系统用户 |
-| `sudo ng status` / `logs` | 状态与日志 |
-| `sudo ng self-update` | 更新管理脚本自身 |
-
-安装落盘位置：
-
-```text
-/usr/local/bin/ng
-/opt/nexusgate/bin/p2p-server|p2p-edge
-/opt/nexusgate/server/config/server.toml
-/opt/nexusgate/client/config/edge.toml
-/opt/nexusgate/data/
-/etc/systemd/system/nexusgate-server.service
-/etc/systemd/system/nexusgate-edge.service
-```
-
-> 更新/安装二进制依赖 GitHub Release 资产：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`。请先发布 Release 或触发 Actions 产物挂载。
-
----
-
-## 部署方式
-
-### A. Release 二进制
+### B. Release 二进制
 
 发布 GitHub Release 后，Actions 会上传多平台产物：
 
@@ -186,7 +246,7 @@ cargo build --release --locked -p p2p-server -p p2p-edge
 cd web && npm ci && npm run build
 ```
 
-### B. Docker（GHCR）
+### C. Docker（GHCR）
 
 镜像：
 
@@ -208,7 +268,7 @@ docker run --rm -p 3000:3000 -p 7000:7000 -p 7001:7001 -p 8080:8080 \
 docker build -t nexusgate-server .
 ```
 
-### C. Docker Compose
+### D. Docker Compose
 
 ```bash
 cd deploy/compose
@@ -220,17 +280,19 @@ docker compose up -d
 - API / Gateway：宿主机 `3000` / `8080`
 - Web：`http://127.0.0.1:8088`
 
-### D. Systemd
+### E. Systemd（手动）
+
+更推荐直接用 `ng`（见上文「推荐安装」）。若手动部署：
 
 ```bash
 sudo cp deploy/systemd/p2p-server.service /etc/systemd/system/nexusgate-server.service
 sudo cp deploy/systemd/p2p-edge.service /etc/systemd/system/nexusgate-edge.service
-# 按需修改二进制与配置路径
+# 按需修改 ExecStart 路径后：
 sudo systemctl enable --now nexusgate-server
 sudo systemctl enable --now nexusgate-edge
 ```
 
-### E. Nginx 反代
+### F. Nginx 反代
 
 参考 `deploy/nginx/p2p-network.conf` 与 `deploy/nginx/web.conf`：
 
@@ -238,7 +300,7 @@ sudo systemctl enable --now nexusgate-edge
 - `/api/`、`/ws/` → Server `:3000`
 - Gateway / Control / Data 端口按需对公网放行
 
-### F. Kubernetes
+### G. Kubernetes
 
 ```bash
 kubectl apply -f deploy/kubernetes/namespace.yaml
