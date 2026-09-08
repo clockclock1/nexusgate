@@ -34,6 +34,11 @@ grep -q 'NexusGate Linux manager' "$tmp" || {
 
 install -m 755 "$tmp" "$DEST"
 echo "[install-ng] 已安装: ${DEST}"
-echo "[install-ng] 现在可以随时执行: sudo ng"
-echo "[install-ng] 或交互菜单: sudo ng menu"
-"$DEST" help | head -n 20 || true
+echo
+echo "[install-ng] 使用方式:"
+echo "  ng            # 打开数字菜单（会自动请求 sudo）"
+echo "  sudo ng       # 同上"
+echo "  sudo ng help  # 命令行帮助"
+echo
+echo "[install-ng] 正在打开菜单提示（也可稍后直接运行 ng）..."
+"$DEST" help | head -n 25 || true

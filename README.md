@@ -68,12 +68,23 @@
 curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
 ```
 
-安装后可随时唤起：
+安装后可随时唤起数字菜单（输入数字选择功能）：
 
 ```bash
-sudo ng            # 交互菜单
-sudo ng help       # 查看全部命令
-sudo ng status     # 查看运行状态
+ng                 # 自动 sudo，进入菜单
+sudo ng            # 同上
+```
+
+菜单示例：
+
+```text
+======== NexusGate 管理菜单 ========
+  1) 安装服务端
+  2) 安装客户端
+  3) 更新服务端
+  ...
+  0) 退出
+请输入数字选择功能:
 ```
 
 也可从本地仓库安装：

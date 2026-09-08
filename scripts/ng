@@ -553,7 +553,11 @@ print_help() {
   cat <<EOF
 ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
 
-用法:
+直接运行进入数字菜单:
+  sudo ng
+  ng              # 非 root 时会自动请求 sudo
+
+也可直接传命令:
   sudo ng <命令> [参数]
 
 安装 / 更新 / 卸载:
@@ -582,72 +586,191 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
   menu                    交互菜单（默认）
 
 示例:
+  sudo ng
   sudo ng install-server
   sudo ng config-client
   sudo ng restart server
-  sudo ng update-server
-  sudo ng uninstall-all
 EOF
 }
 
+ask_target() {
+  # $1 = default label for hint: all|server
+  local def="${1:-all}"
+  echo
+  echo "  选择目标:"
+  echo "    1) server  (服务端)"
+  echo "    2) client  (客户端)"
+  echo "    3) all     (全部)"
+  echo -n "  请输入数字 [默认 $([[ "$def" == "server" ]] && echo 1 || echo 3)]: "
+  local c
+  read -r c
+  if [[ -z "$c" ]]; then
+    if [[ "$def" == "server" ]]; then echo server; else echo all; fi
+    return
+  fi
+  case "$c" in
+    1) echo server ;;
+    2) echo client ;;
+    3) echo all ;;
+    server|s) echo server ;;
+    client|c|edge|e) echo client ;;
+    all|a) echo all ;;
+    *)
+      warn "无效选择，使用默认: $def"
+      echo "$def"
+      ;;
+  esac
+}
+
+pause() {
+  echo
+  echo -n "按回车返回菜单..."
+  read -r _
+}
+
+ensure_root_or_reexec() {
+  if [[ ${EUID} -ne 0 ]]; then
+    if have_cmd sudo; then
+      log "需要管理员权限，正在通过 sudo 重新启动..."
+      exec sudo -E "$0" "$@"
+    fi
+    die "请使用 root 运行：sudo ng"
+  fi
+}
+
 menu() {
+  ensure_root_or_reexec menu
   while true; do
+    clear 2>/dev/null || true
     echo
-    echo -e "${BOLD}======== NexusGate 管理 (ng) ========${NC}"
-    echo "  1) 安装服务端"
-    echo "  2) 安装客户端"
-    echo "  3) 启动"
-    echo "  4) 重启"
-    echo "  5) 关闭"
-    echo "  6) 更新服务端"
-    echo "  7) 更新客户端"
-    echo "  8) 配置服务端"
-    echo "  9) 配置客户端"
-    echo " 10) 卸载客户端"
-    echo " 11) 卸载服务端"
-    echo " 12) 状态"
-    echo " 13) 日志"
-    echo " 14) 完全卸载(全部)"
-    echo " 15) 更新管理脚本"
-    echo "  0) 退出"
-    echo -n "请选择: "
+    echo -e "${BOLD}======== NexusGate 管理菜单 ========${NC}"
+    echo -e "  命令: ${CYAN}ng${NC}  |  目录: ${PREFIX}"
+    if [[ -f "$VERSION_FILE" ]]; then
+      echo -e "  本地版本: $(cat "$VERSION_FILE")"
+    fi
+    echo
+    echo "  -------- 安装 / 更新 --------"
+    echo "   1) 安装服务端"
+    echo "   2) 安装客户端"
+    echo "   3) 更新服务端（GitHub 最新）"
+    echo "   4) 更新客户端（GitHub 最新）"
+    echo
+    echo "  -------- 运行控制 --------"
+    echo "   5) 启动"
+    echo "   6) 重启"
+    echo "   7) 关闭"
+    echo "   8) 查看状态"
+    echo "   9) 查看日志"
+    echo
+    echo "  -------- 配置 --------"
+    echo "  10) 配置服务端"
+    echo "  11) 配置客户端"
+    echo
+    echo "  -------- 卸载 --------"
+    echo "  12) 卸载客户端（完全清理）"
+    echo "  13) 卸载服务端（完全清理）"
+    echo "  14) 完全卸载全部"
+    echo
+    echo "  -------- 其它 --------"
+    echo "  15) 更新本管理脚本 ng"
+    echo "  16) 显示命令帮助"
+    echo "   0) 退出"
+    echo
+    echo -n "请输入数字选择功能: "
+    local choice t
     read -r choice
+    echo
     case "$choice" in
-      1) cmd_install_server ;;
-      2) cmd_install_client ;;
+      1)
+        cmd_install_server
+        pause
+        ;;
+      2)
+        cmd_install_client
+        pause
+        ;;
       3)
-        echo -n "目标 server/client/all [all]: "; read -r t
-        cmd_start "${t:-all}"
+        cmd_update_server
+        pause
         ;;
       4)
-        echo -n "目标 server/client/all [all]: "; read -r t
-        cmd_restart "${t:-all}"
+        cmd_update_client
+        pause
         ;;
       5)
-        echo -n "目标 server/client/all [all]: "; read -r t
-        cmd_stop "${t:-all}"
+        t="$(ask_target all)"
+        cmd_start "$t"
+        pause
         ;;
-      6) cmd_update_server ;;
-      7) cmd_update_client ;;
-      8) cmd_config_server ;;
-      9) cmd_config_client ;;
-      10) cmd_uninstall_client ;;
-      11) cmd_uninstall_server ;;
-      12) cmd_status ;;
+      6)
+        t="$(ask_target all)"
+        cmd_restart "$t"
+        pause
+        ;;
+      7)
+        t="$(ask_target all)"
+        cmd_stop "$t"
+        pause
+        ;;
+      8)
+        cmd_status
+        pause
+        ;;
+      9)
+        t="$(ask_target server)"
+        echo "开始跟踪日志，Ctrl+C 结束..."
+        sleep 1
+        cmd_logs "$t" || true
+        pause
+        ;;
+      10)
+        cmd_config_server
+        pause
+        ;;
+      11)
+        cmd_config_client
+        pause
+        ;;
+      12)
+        cmd_uninstall_client
+        pause
+        ;;
       13)
-        echo -n "目标 server/client/all [server]: "; read -r t
-        cmd_logs "${t:-server}"
+        cmd_uninstall_server
+        pause
         ;;
-      14) cmd_uninstall_all ;;
-      15) cmd_self_update ;;
-      0) exit 0 ;;
-      *) warn "无效选项" ;;
+      14)
+        cmd_uninstall_all
+        pause
+        ;;
+      15)
+        cmd_self_update
+        pause
+        ;;
+      16)
+        print_help
+        pause
+        ;;
+      0|q|Q)
+        echo "已退出。"
+        exit 0
+        ;;
+      *)
+        warn "无效选项: ${choice}（请输入菜单中的数字）"
+        sleep 1
+        ;;
     esac
   done
 }
 
 main() {
-  local cmd="${1:-menu}"
+  # 无参数 -> 数字菜单
+  if [[ $# -eq 0 ]]; then
+    menu
+    return
+  fi
+
+  local cmd="$1"
   shift || true
   case "$cmd" in
     install-server|is) cmd_install_server "$@" ;;
@@ -669,8 +792,18 @@ main() {
     help|-h|--help) print_help ;;
     *)
       err "未知命令: $cmd"
+      echo
       print_help
-      exit 1
+      echo
+      echo -n "是否进入数字菜单? [Y/n] "
+      local ans
+      read -r ans
+      ans="${ans:-Y}"
+      if [[ "$ans" =~ ^[Yy]$ ]]; then
+        menu
+      else
+        exit 1
+      fi
       ;;
   esac
 }
