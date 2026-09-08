@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NexusGate Linux manager — invoke as: ng
+# NexusGate Linux manager - invoke as: ng
 # Install self: curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
 
 set -euo pipefail
