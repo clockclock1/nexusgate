@@ -107,6 +107,22 @@ sudo ng install-server
 
 默认值一般为 API `3000` / Control `7000` / Data `7001` / Gateway `8080`，管理员 `admin` / `admin123`。
 
+### 2.1 安装管理面板（通常与服务端同机）
+
+```bash
+sudo ng install-web
+```
+
+流程：
+
+1. 下载 Release 中的 `nexusgate-web.zip`
+2. 逐项配置面板端口（默认 `8088`）与 API 反代地址（默认 `127.0.0.1:3000`）
+3. 用独立 nginx 配置启动 `nexusgate-web.service`，反代 `/api/`、`/ws/`
+
+浏览器访问：`http://<服务器IP>:8088`（账号同服务端管理员）。
+
+也可：`sudo ng config-web` / `sudo ng update-web` / `sudo ng uninstall-web`。
+
 ### 3. 安装并启动客户端（内网机器）
 
 ```bash
@@ -131,12 +147,15 @@ sudo ng stop server
 sudo ng restart client
 sudo ng update-server      # 拉 GitHub 最新服务端并重启
 sudo ng update-client
+sudo ng update-web
 sudo ng config-server      # 逐项改服务端配置
 sudo ng config-client      # 逐项改客户端配置
-sudo ng show-config        # 查看当前配置（可加 server|client）
+sudo ng config-web         # 逐项改管理面板端口/反代
+sudo ng show-config        # 查看当前配置（可加 server|client|web）
 sudo ng logs server
 sudo ng uninstall-client   # 完全卸载客户端
 sudo ng uninstall-server   # 完全卸载服务端（含数据）
+sudo ng uninstall-web      # 完全卸载管理面板
 sudo ng uninstall-all      # 清空全部组件与数据
 sudo ng uninstall-ng       # 仅卸载 ng 管理脚本
 sudo ng self-update        # 更新 ng 脚本自身
@@ -144,14 +163,14 @@ sudo ng self-update        # 更新 ng 脚本自身
 
 | 命令 | 说明 |
 |------|------|
-| `install-server` / `install-client` | 下载 → 逐项配置 → systemd 开机自启 |
-| `start` / `stop` / `restart [server\|client\|all]` | 启停控制 |
-| `update-server` / `update-client` | 从 GitHub Release 更新二进制 |
-| `config-server` / `config-client` | **逐项交互配置**（可选重启），不直接打开编辑器 |
-| `show-config [server\|client\|all]` | 查看当前配置内容 |
-| `uninstall-server` / `uninstall-client` | **完全卸载**（配置/数据/单元） |
+| `install-server` / `install-client` / `install-web` | 下载 → 逐项配置 → systemd 开机自启 |
+| `start` / `stop` / `restart [server\|client\|web\|all]` | 启停控制 |
+| `update-server` / `update-client` / `update-web` | 从 GitHub Release 更新 |
+| `config-server` / `config-client` / `config-web` | **逐项交互配置**（可选重启） |
+| `show-config [server\|client\|web\|all]` | 查看当前配置内容 |
+| `uninstall-server` / `uninstall-client` / `uninstall-web` | **完全卸载**（配置/数据/单元） |
 | `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
-| `uninstall-ng` | 仅卸载管理脚本 `ng`（保留已装服务端/客户端） |
+| `uninstall-ng` | 仅卸载管理脚本 `ng`（保留已装组件） |
 | `status` / `logs` | 状态与日志 |
 | `self-update` | 更新管理脚本 |
 | `mirror` / `test-mirror` | 镜像源设置与探测 |
@@ -164,12 +183,16 @@ sudo ng self-update        # 更新 ng 脚本自身
 /opt/nexusgate/bin/p2p-edge
 /opt/nexusgate/server/config/server.toml
 /opt/nexusgate/client/config/edge.toml
+/opt/nexusgate/web/dist/
+/opt/nexusgate/web/web.env
+/opt/nexusgate/web/nginx.conf
 /opt/nexusgate/data/
 /etc/systemd/system/nexusgate-server.service
 /etc/systemd/system/nexusgate-edge.service
+/etc/systemd/system/nexusgate-web.service
 ```
 
-> 二进制安装/更新依赖 Release 资产名：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`。请先在仓库发布 Release（Actions 会自动挂载产物）。
+> 二进制安装/更新依赖 Release 资产名：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`、`nexusgate-web.zip`。请先在仓库发布 Release（Actions 会自动挂载产物）。
 
 ### GitHub 镜像源（国内网络）
 

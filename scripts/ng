@@ -17,14 +17,21 @@ SERVER_CFG_DIR="${PREFIX}/server/config"
 CLIENT_CFG_DIR="${PREFIX}/client/config"
 SERVER_CFG="${SERVER_CFG_DIR}/server.toml"
 CLIENT_CFG="${CLIENT_CFG_DIR}/edge.toml"
+WEB_DIR="${PREFIX}/web"
+WEB_DIST="${WEB_DIR}/dist"
+WEB_ENV="${WEB_DIR}/web.env"
+WEB_NGINX_CONF="${WEB_DIR}/nginx.conf"
 DATA_DIR="${PREFIX}/data"
 STATE_DIR="${PREFIX}/.state"
 VERSION_FILE="${STATE_DIR}/version"
 MIRROR_FILE="${STATE_DIR}/mirror"
 SERVER_UNIT="nexusgate-server.service"
 EDGE_UNIT="nexusgate-edge.service"
+WEB_UNIT="nexusgate-web.service"
 SYSUSER="nexusgate"
 NG_LINK="/usr/local/bin/${NG_CMD_NAME}"
+DEFAULT_WEB_PORT="8088"
+DEFAULT_API_UPSTREAM="127.0.0.1:3000"
 
 # GitHub 下载镜像前缀（把完整 https://github.com/... URL 接在后面）
 # 可用环境变量 NG_MIRROR 覆盖，例如: export NG_MIRROR=https://ghproxy.net/
@@ -235,8 +242,23 @@ ensure_tools() {
   have_cmd systemctl || die "缺少 systemd（systemctl）"
 }
 
+ensure_web_tools() {
+  ensure_tools
+  if ! have_cmd unzip; then
+    warn "未检测到 unzip，尝试自动安装..."
+    try_install_pkg unzip || true
+    have_cmd unzip || die "缺少 unzip，请先安装: apt-get install -y unzip"
+  fi
+  if ! have_cmd nginx; then
+    warn "未检测到 nginx，尝试自动安装（管理面板需要）..."
+    try_install_pkg nginx || true
+    have_cmd nginx || die "缺少 nginx，请先安装: apt-get install -y nginx"
+  fi
+}
+
 ensure_dirs() {
   mkdir -p "$BIN_DIR" "$SERVER_CFG_DIR" "$CLIENT_CFG_DIR" "$DATA_DIR" "$STATE_DIR"
+  mkdir -p "$WEB_DIR" "$WEB_DIST" "${WEB_DIR}/logs" "${WEB_DIR}/tmp"
 }
 
 ensure_user() {
@@ -435,6 +457,169 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+web_env_get() {
+  local key="$1" def="${2:-}"
+  if [[ -f "$WEB_ENV" ]]; then
+    local line
+    line="$(grep -E "^[[:space:]]*${key}=" "$WEB_ENV" 2>/dev/null | head -n1 || true)"
+    if [[ -n "$line" ]]; then
+      printf '%s' "${line#*=}"
+      return 0
+    fi
+  fi
+  printf '%s' "$def"
+}
+
+write_web_env_file() {
+  local listen_port="$1" api_upstream="$2"
+  cat >"$WEB_ENV" <<EOF
+# NexusGate Web panel settings (managed by ng)
+listen_port=${listen_port}
+api_upstream=${api_upstream}
+EOF
+}
+
+write_web_nginx_conf() {
+  local listen_port api_upstream mime_line
+  listen_port="$(web_env_get listen_port "$DEFAULT_WEB_PORT")"
+  api_upstream="$(web_env_get api_upstream "$DEFAULT_API_UPSTREAM")"
+  mkdir -p "${WEB_DIR}/logs" "${WEB_DIR}/tmp/client_body" "${WEB_DIR}/tmp/proxy" \
+    "${WEB_DIR}/tmp/fastcgi" "${WEB_DIR}/tmp/uwsgi" "${WEB_DIR}/tmp/scgi"
+  if [[ -f /etc/nginx/mime.types ]]; then
+    mime_line="include /etc/nginx/mime.types;"
+  else
+    mime_line="types { text/html html htm; text/css css; application/javascript js; application/json json; image/png png; image/jpeg jpg jpeg; image/svg+xml svg; font/woff2 woff2; }"
+  fi
+  cat >"$WEB_NGINX_CONF" <<EOF
+worker_processes auto;
+error_log ${WEB_DIR}/logs/error.log warn;
+pid ${WEB_DIR}/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    ${mime_line}
+    default_type application/octet-stream;
+    sendfile on;
+    keepalive_timeout 65;
+    client_body_temp_path ${WEB_DIR}/tmp/client_body;
+    proxy_temp_path ${WEB_DIR}/tmp/proxy;
+    fastcgi_temp_path ${WEB_DIR}/tmp/fastcgi;
+    uwsgi_temp_path ${WEB_DIR}/tmp/uwsgi;
+    scgi_temp_path ${WEB_DIR}/tmp/scgi;
+    access_log ${WEB_DIR}/logs/access.log;
+
+    server {
+        listen ${listen_port};
+        server_name _;
+        root ${WEB_DIST};
+        index index.html;
+
+        location /api/ {
+            proxy_pass http://${api_upstream};
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+
+        location /ws/ {
+            proxy_pass http://${api_upstream};
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_read_timeout 3600s;
+        }
+
+        location / {
+            try_files \$uri \$uri/ /index.html;
+        }
+    }
+}
+EOF
+}
+
+write_web_unit() {
+  local nginx_bin
+  nginx_bin="$(command -v nginx)"
+  cat >"/etc/systemd/system/${WEB_UNIT}" <<EOF
+[Unit]
+Description=NexusGate Web Admin Panel (nginx)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${WEB_DIR}
+ExecStart=${nginx_bin} -g "daemon off;" -c ${WEB_NGINX_CONF}
+ExecReload=${nginx_bin} -s reload -c ${WEB_NGINX_CONF}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+configure_web_interactive() {
+  ensure_dirs
+  echo
+  echo -e "${BOLD}======== 管理面板配置向导 ========${NC}"
+  echo "  静态资源目录: ${WEB_DIST}"
+  echo "  Nginx 将反代 /api/ 与 /ws/ 到服务端 API"
+  echo
+
+  local listen_port api_upstream def_api
+  def_api="$DEFAULT_API_UPSTREAM"
+  if [[ -f "$SERVER_CFG" ]]; then
+    local ap
+    ap="$(toml_get "$SERVER_CFG" api_port 3000)"
+    def_api="127.0.0.1:${ap}"
+  fi
+  def_api="$(web_env_get api_upstream "$def_api")"
+  listen_port="$(ask_input "面板监听端口 listen_port" "$(web_env_get listen_port "$DEFAULT_WEB_PORT")" 1)"
+  api_upstream="$(ask_input "API 反代地址 api_upstream (host:port)" "$def_api" 1)"
+
+  write_web_env_file "$listen_port" "$api_upstream"
+  write_web_nginx_conf
+  echo
+  log "管理面板配置已保存: ${WEB_ENV}"
+  echo -e "  访问地址: http://0.0.0.0:${listen_port}"
+  echo -e "  API 上游: ${api_upstream}"
+}
+
+install_web_dist_from_release() {
+  local tag zip tmpdir idx src
+  tag="$(latest_tag)"
+  [[ -n "$tag" ]] || die "无法获取最新 Release 版本"
+  ensure_dirs
+  zip="${WEB_DIR}/nexusgate-web.zip"
+  log "下载管理面板静态包 nexusgate-web.zip (${tag})..."
+  download_url_failover "$(release_asset_origin_url "$tag" "nexusgate-web.zip")" "$zip"
+  tmpdir="${WEB_DIR}/.extract.$$"
+  rm -rf "$tmpdir"
+  mkdir -p "$tmpdir"
+  unzip -o -q "$zip" -d "$tmpdir"
+  idx="$(find "$tmpdir" -type f -name index.html | head -n1 || true)"
+  [[ -n "$idx" ]] || die "nexusgate-web.zip 中未找到 index.html"
+  src="$(dirname "$idx")"
+  rm -rf "${WEB_DIST}.new"
+  mkdir -p "${WEB_DIST}.new"
+  cp -a "${src}/." "${WEB_DIST}.new/"
+  rm -rf "$WEB_DIST"
+  mv "${WEB_DIST}.new" "$WEB_DIST"
+  rm -rf "$tmpdir"
+  echo "$tag" >"${WEB_DIR}/version"
+  echo "$tag" >"$VERSION_FILE"
+  log "管理面板静态资源已安装到 ${WEB_DIST}"
 }
 
 # ---------- 交互式配置（逐项提问，不直接打开编辑器）----------
@@ -672,6 +857,7 @@ svc_do() {
 
 installed_server() { [[ -x "$SERVER_BIN" ]] && unit_exists "$SERVER_UNIT"; }
 installed_client() { [[ -x "$EDGE_BIN" ]] && unit_exists "$EDGE_UNIT"; }
+installed_web() { [[ -f "${WEB_DIST}/index.html" ]] && unit_exists "$WEB_UNIT"; }
 
 cmd_install_server() {
   need_root "install-server"
@@ -750,6 +936,58 @@ cmd_install_client() {
   fi
 }
 
+cmd_install_web() {
+  need_root "install-web"
+  ensure_web_tools
+  ensure_dirs
+  ensure_user
+  install_web_dist_from_release
+
+  echo
+  log "静态资源已就绪，开始逐项配置管理面板..."
+  configure_web_interactive
+
+  write_web_unit
+  fix_ownership
+  systemctl daemon-reload
+
+  # 避免与系统默认 nginx 抢占冲突：若系统 nginx 在跑且同端口，仅作提示
+  local wp
+  wp="$(web_env_get listen_port "$DEFAULT_WEB_PORT")"
+
+  echo
+  if ask_yn "写入 systemd 并启用开机自启，立即启动管理面板?" "Y"; then
+    # 若系统 nginx 占用同端口，尝试不冲突：本单元使用独立 -c 配置
+    systemctl enable "$WEB_UNIT"
+    systemctl restart "$WEB_UNIT" || systemctl start "$WEB_UNIT"
+    if systemctl is-active --quiet "$WEB_UNIT"; then
+      log "管理面板已安装并开机自启"
+      log "浏览器访问: http://<服务器IP>:${wp}  （默认账号见服务端配置）"
+    else
+      die "管理面板启动失败，请查看: journalctl -u ${WEB_UNIT} -xe  以及 ${WEB_DIR}/logs/error.log"
+    fi
+  else
+    systemctl enable "$WEB_UNIT" || true
+    log "管理面板已安装，未立即启动。稍后: sudo ng start web"
+  fi
+}
+
+cmd_update_web() {
+  need_root "update-web"
+  installed_web || die "管理面板未安装，请先: sudo ng install-web"
+  ensure_web_tools
+  local running=0
+  if systemctl is-active --quiet "$WEB_UNIT"; then running=1; systemctl stop "$WEB_UNIT"; fi
+  install_web_dist_from_release
+  write_web_nginx_conf
+  fix_ownership
+  systemctl daemon-reload
+  if ((running)); then
+    systemctl start "$WEB_UNIT"
+  fi
+  log "管理面板已更新到 $(cat "${WEB_DIR}/version" 2>/dev/null || echo latest)"
+}
+
 cmd_update_server() {
   need_root "update-server"
   installed_server || die "服务端未安装，请先: sudo ng install-server"
@@ -793,8 +1031,9 @@ pick_target() {
   case "$t" in
     server|s) echo server ;;
     client|edge|c|e) echo client ;;
+    web|w|panel|ui) echo web ;;
     all|a|"") echo all ;;
-    *) die "目标无效: $t（server|client|all）" ;;
+    *) die "目标无效: $t（server|client|web|all）" ;;
   esac
 }
 
@@ -811,9 +1050,14 @@ cmd_start() {
       installed_client || die "客户端未安装"
       svc_do start "$EDGE_UNIT"
       ;;
+    web)
+      installed_web || die "管理面板未安装"
+      svc_do start "$WEB_UNIT"
+      ;;
     all)
       installed_server && svc_do start "$SERVER_UNIT" || warn "跳过服务端（未安装）"
       installed_client && svc_do start "$EDGE_UNIT" || warn "跳过客户端（未安装）"
+      installed_web && svc_do start "$WEB_UNIT" || warn "跳过管理面板（未安装）"
       ;;
   esac
   log "已启动: $t"
@@ -826,9 +1070,11 @@ cmd_stop() {
   case "$t" in
     server) unit_exists "$SERVER_UNIT" && svc_do stop "$SERVER_UNIT" || true ;;
     client) unit_exists "$EDGE_UNIT" && svc_do stop "$EDGE_UNIT" || true ;;
+    web) unit_exists "$WEB_UNIT" && svc_do stop "$WEB_UNIT" || true ;;
     all)
       unit_exists "$SERVER_UNIT" && svc_do stop "$SERVER_UNIT" || true
       unit_exists "$EDGE_UNIT" && svc_do stop "$EDGE_UNIT" || true
+      unit_exists "$WEB_UNIT" && svc_do stop "$WEB_UNIT" || true
       ;;
   esac
   log "已停止: $t"
@@ -847,9 +1093,20 @@ cmd_restart() {
       installed_client || die "客户端未安装"
       svc_do restart "$EDGE_UNIT"
       ;;
+    web)
+      installed_web || die "管理面板未安装"
+      write_web_nginx_conf
+      svc_do restart "$WEB_UNIT"
+      ;;
     all)
       installed_server && svc_do restart "$SERVER_UNIT" || warn "跳过服务端"
       installed_client && svc_do restart "$EDGE_UNIT" || warn "跳过客户端"
+      if installed_web; then
+        write_web_nginx_conf
+        svc_do restart "$WEB_UNIT"
+      else
+        warn "跳过管理面板"
+      fi
       ;;
   esac
   log "已重启: $t"
@@ -885,6 +1142,24 @@ cmd_config_client() {
   fi
 }
 
+cmd_config_web() {
+  need_root "config-web"
+  ensure_web_tools
+  ensure_dirs
+  configure_web_interactive
+  write_web_unit
+  fix_ownership 2>/dev/null || true
+  systemctl daemon-reload
+  if unit_exists "$WEB_UNIT"; then
+    if ask_yn "配置已保存，是否立即重启管理面板?" "Y"; then
+      svc_do restart "$WEB_UNIT"
+      log "管理面板已重启"
+    fi
+  else
+    warn "管理面板尚未安装 systemd 单元；请先: sudo ng install-web"
+  fi
+}
+
 purge_server_files() {
   rm -f "$SERVER_BIN" "${SERVER_BIN}.new"
   rm -rf "${PREFIX}/server"
@@ -901,9 +1176,20 @@ purge_client_files() {
   rm -f "/etc/systemd/system/multi-user.target.wants/${EDGE_UNIT}"
 }
 
+purge_web_files() {
+  unit_exists "$WEB_UNIT" && systemctl disable --now "$WEB_UNIT" 2>/dev/null || true
+  rm -rf "$WEB_DIR"
+  rm -f "/etc/systemd/system/${WEB_UNIT}"
+  rm -f "/etc/systemd/system/multi-user.target.wants/${WEB_UNIT}"
+}
+
+any_component_installed() {
+  [[ -x "$SERVER_BIN" || -x "$EDGE_BIN" || -f "${WEB_DIST}/index.html" ]]
+}
+
 maybe_purge_all() {
-  # If neither component remains, wipe prefix, user, and optionally ng itself
-  if [[ ! -x "$SERVER_BIN" && ! -x "$EDGE_BIN" ]]; then
+  # If no component remains, wipe prefix and system user
+  if ! any_component_installed; then
     systemctl daemon-reload || true
     rm -rf "$PREFIX"
     if id -u "$SYSUSER" >/dev/null 2>&1; then
@@ -939,15 +1225,27 @@ cmd_uninstall_client() {
   log "客户端已完全卸载"
 }
 
+cmd_uninstall_web() {
+  need_root "uninstall-web"
+  warn "将完全卸载管理面板：静态资源、nginx 单元与配置"
+  read -r -p "确认卸载管理面板? 输入 yes 继续: " ans
+  [[ "$ans" == "yes" ]] || die "已取消"
+  purge_web_files
+  maybe_purge_all
+  log "管理面板已完全卸载"
+}
+
 cmd_uninstall_all() {
   need_root "uninstall-all"
-  warn "将卸载服务端+客户端，并删除 ${PREFIX}、systemd 单元与用户 ${SYSUSER}"
+  warn "将卸载服务端+客户端+管理面板，并删除 ${PREFIX}、systemd 单元与用户 ${SYSUSER}"
   read -r -p "确认完全卸载 NexusGate? 输入 YES 继续: " ans
   [[ "$ans" == "YES" ]] || die "已取消"
   unit_exists "$SERVER_UNIT" && systemctl disable --now "$SERVER_UNIT" 2>/dev/null || true
   unit_exists "$EDGE_UNIT" && systemctl disable --now "$EDGE_UNIT" 2>/dev/null || true
+  unit_exists "$WEB_UNIT" && systemctl disable --now "$WEB_UNIT" 2>/dev/null || true
   purge_server_files
   purge_client_files
+  purge_web_files
   systemctl daemon-reload || true
   rm -rf "$PREFIX"
   if id -u "$SYSUSER" >/dev/null 2>&1; then
@@ -971,8 +1269,8 @@ cmd_uninstall_ng() {
   echo "  - ${NG_LINK}"
   [[ -f "${PREFIX}/scripts/ng" ]] && echo "  - ${PREFIX}/scripts/ng"
   echo
-  if installed_server || installed_client; then
-    warn "注意: 服务端/客户端仍保留，不会随 ng 一并删除。"
+  if installed_server || installed_client || installed_web; then
+    warn "注意: 服务端/客户端/管理面板仍保留，不会随 ng 一并删除。"
     warn "若要连同组件一起清掉，请用菜单「完全卸载全部」或: sudo ng uninstall-all"
     echo
   fi
@@ -1039,6 +1337,16 @@ cmd_status() {
   else
     echo -e "${CYAN}客户端${NC}: 未安装"
   fi
+  echo
+  if installed_web || unit_exists "$WEB_UNIT"; then
+    echo -e "${CYAN}管理面板${NC}: $(systemctl is-active "$WEB_UNIT" 2>/dev/null || echo unknown) / $(systemctl is-enabled "$WEB_UNIT" 2>/dev/null || echo unknown)"
+    echo "  静态目录: $WEB_DIST"
+    echo "  配置:     $WEB_ENV"
+    echo "  Nginx:    $WEB_NGINX_CONF"
+    echo "  访问:     http://0.0.0.0:$(web_env_get listen_port "$DEFAULT_WEB_PORT")"
+  else
+    echo -e "${CYAN}管理面板${NC}: 未安装"
+  fi
 }
 
 print_config_file() {
@@ -1063,8 +1371,8 @@ cmd_show_config() {
     t="all"
   fi
   case "$t" in
-    server|s|client|c|edge|e|all|a) ;;
-    *) die "目标无效: $t（server|client|all）" ;;
+    server|s|client|c|edge|e|web|w|panel|ui|all|a) ;;
+    *) die "目标无效: $t（server|client|web|all）" ;;
   esac
   t="$(pick_target "$t")"
 
@@ -1076,9 +1384,15 @@ cmd_show_config() {
     client)
       print_config_file "客户端" "$CLIENT_CFG"
       ;;
+    web)
+      print_config_file "管理面板 web.env" "$WEB_ENV"
+      print_config_file "管理面板 nginx.conf" "$WEB_NGINX_CONF"
+      ;;
     all)
       print_config_file "服务端" "$SERVER_CFG"
       print_config_file "客户端" "$CLIENT_CFG"
+      print_config_file "管理面板 web.env" "$WEB_ENV"
+      print_config_file "管理面板 nginx.conf" "$WEB_NGINX_CONF"
       ;;
   esac
 }
@@ -1089,8 +1403,12 @@ cmd_logs() {
   case "$t" in
     server) journalctl -u "$SERVER_UNIT" -f --no-pager ;;
     client) journalctl -u "$EDGE_UNIT" -f --no-pager ;;
+    web)
+      echo "systemd: journalctl -u ${WEB_UNIT}"
+      journalctl -u "$WEB_UNIT" -f --no-pager
+      ;;
     all)
-      journalctl -u "$SERVER_UNIT" -u "$EDGE_UNIT" -f --no-pager
+      journalctl -u "$SERVER_UNIT" -u "$EDGE_UNIT" -u "$WEB_UNIT" -f --no-pager
       ;;
   esac
 }
@@ -1127,24 +1445,28 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
 安装 / 更新 / 卸载:
   install-server          安装服务端：下载 → 逐项配置 → systemd 自启
   install-client          安装客户端：下载 → 逐项配置 → systemd 自启
+  install-web             安装管理面板：下载 zip → 逐项配置 → nginx 自启
   update-server           更新服务端到 GitHub 最新 Release
   update-client           更新客户端到 GitHub 最新 Release
+  update-web              更新管理面板静态资源到最新 Release
   uninstall-server        完全卸载服务端（含配置与数据）
   uninstall-client        完全卸载客户端（含配置）
+  uninstall-web           完全卸载管理面板
   uninstall-all           卸载全部并清理 /opt/nexusgate 与系统用户
-  uninstall-ng            仅卸载管理脚本 ng（不影响已装服务端/客户端）
+  uninstall-ng            仅卸载管理脚本 ng（不影响已装组件）
 
 运行控制:
-  start   [server|client|all]    启动（默认 all）
-  stop    [server|client|all]    停止
-  restart [server|client|all]    重启
-  status                         查看状态
-  logs    [server|client|all]    跟踪日志
+  start   [server|client|web|all]    启动（默认 all）
+  stop    [server|client|web|all]    停止
+  restart [server|client|web|all]    重启
+  status                             查看状态
+  logs    [server|client|web|all]    跟踪日志
 
 配置:
   config-server           逐项交互配置服务端（可选重启）
   config-client           逐项交互配置客户端（可选重启）
-  show-config [server|client|all]  查看当前配置（默认 all）
+  config-web              逐项交互配置管理面板端口/API 反代
+  show-config [server|client|web|all]  查看当前配置（默认 all）
 
 其它:
   mirror                  设置 GitHub 镜像源（下载故障转移）
@@ -1155,37 +1477,45 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
 
 示例:
   sudo ng
-  sudo ng mirror
-  NG_MIRROR=https://ghproxy.net/ sudo -E ng install-server
   sudo ng install-server
-  sudo ng config-client
-  sudo ng show-config
-  sudo ng restart server
+  sudo ng install-web
+  sudo ng show-config web
+  sudo ng restart web
 EOF
 }
 
 ask_target() {
-  # $1 = default label for hint: all|server
+  # $1 = default label for hint: all|server|web
   # 提示必须打到 stderr，避免被 t="$(ask_target)" 吃掉
   local def="${1:-all}"
+  local def_num=4
+  case "$def" in
+    server) def_num=1 ;;
+    client) def_num=2 ;;
+    web) def_num=3 ;;
+    *) def_num=4 ;;
+  esac
   echo >&2
   echo "  选择目标:" >&2
   echo "    1) server  (服务端)" >&2
   echo "    2) client  (客户端)" >&2
-  echo "    3) all     (全部)" >&2
-  echo -n "  请输入数字 [默认 $([[ "$def" == "server" ]] && echo 1 || echo 3)]: " >&2
+  echo "    3) web     (管理面板)" >&2
+  echo "    4) all     (全部)" >&2
+  echo -n "  请输入数字 [默认 ${def_num}]: " >&2
   local c
   read -r c || true
   if [[ -z "$c" ]]; then
-    if [[ "$def" == "server" ]]; then echo server; else echo all; fi
+    echo "$def"
     return 0
   fi
   case "$c" in
     1) echo server ;;
     2) echo client ;;
-    3) echo all ;;
+    3) echo web ;;
+    4) echo all ;;
     server|s) echo server ;;
     client|c|edge|e) echo client ;;
+    web|w|panel|ui) echo web ;;
     all|a) echo all ;;
     *)
       warn "无效选择，使用默认: $def"
@@ -1263,8 +1593,10 @@ menu() {
     echo "  -------- 安装 / 更新 --------"
     echo "   1) 安装服务端（下载后逐项配置再自启）"
     echo "   2) 安装客户端（下载后逐项配置再自启）"
+    echo "  21) 安装管理面板（下载 zip + nginx 反代）"
     echo "   3) 更新服务端（GitHub 最新）"
     echo "   4) 更新客户端（GitHub 最新）"
+    echo "  22) 更新管理面板"
     echo
     echo "  -------- 运行控制 --------"
     echo "   5) 启动"
@@ -1276,11 +1608,13 @@ menu() {
     echo "  -------- 配置 --------"
     echo "  10) 配置服务端（逐项设置）"
     echo "  11) 配置客户端（逐项设置）"
+    echo "  23) 配置管理面板（端口 / API 反代）"
     echo "  20) 查看当前配置"
     echo
     echo "  -------- 卸载 --------"
     echo "  12) 卸载客户端（完全清理）"
     echo "  13) 卸载服务端（完全清理）"
+    echo "  24) 卸载管理面板（完全清理）"
     echo "  14) 完全卸载全部（含组件）"
     echo "  19) 卸载 ng 管理脚本"
     echo
@@ -1304,12 +1638,20 @@ menu() {
         menu_run cmd_install_client
         menu_finish
         ;;
+      21)
+        menu_run cmd_install_web
+        menu_finish
+        ;;
       3)
         menu_run cmd_update_server
         menu_finish
         ;;
       4)
         menu_run cmd_update_client
+        menu_finish
+        ;;
+      22)
+        menu_run cmd_update_web
         menu_finish
         ;;
       5)
@@ -1348,6 +1690,10 @@ menu() {
         menu_run cmd_config_client
         menu_finish
         ;;
+      23)
+        menu_run cmd_config_web
+        menu_finish
+        ;;
       20)
         t="$(ask_target all)"
         menu_run cmd_show_config "$t"
@@ -1359,6 +1705,10 @@ menu() {
         ;;
       13)
         menu_run cmd_uninstall_server
+        menu_finish
+        ;;
+      24)
+        menu_run cmd_uninstall_web
         menu_finish
         ;;
       14)
@@ -1410,10 +1760,13 @@ main() {
   case "$cmd" in
     install-server|is) cmd_install_server "$@" ;;
     install-client|ic) cmd_install_client "$@" ;;
+    install-web|iw)    cmd_install_web "$@" ;;
     update-server|us)  cmd_update_server "$@" ;;
     update-client|uc)  cmd_update_client "$@" ;;
+    update-web|uw)     cmd_update_web "$@" ;;
     uninstall-server|rs) cmd_uninstall_server "$@" ;;
     uninstall-client|rc) cmd_uninstall_client "$@" ;;
+    uninstall-web|rw)    cmd_uninstall_web "$@" ;;
     uninstall-all|ra)    cmd_uninstall_all "$@" ;;
     uninstall-ng|rng)    cmd_uninstall_ng "$@" ;;
     start)   cmd_start "$@" ;;
@@ -1421,6 +1774,7 @@ main() {
     restart) cmd_restart "$@" ;;
     config-server|cs) cmd_config_server "$@" ;;
     config-client|cc) cmd_config_client "$@" ;;
+    config-web|cw)    cmd_config_web "$@" ;;
     show-config|sc|view-config|vc) cmd_show_config "$@" ;;
     status|st) cmd_status "$@" ;;
     logs|log)  cmd_logs "$@" ;;
