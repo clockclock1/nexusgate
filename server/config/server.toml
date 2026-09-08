@@ -1,0 +1,13 @@
+listen = "0.0.0.0"
+control_port = 7000
+data_port = 7001
+gateway_port = 8080
+api_port = 3000
+database_url = "sqlite://data/p2p.db"
+jwt_secret = "change-me-in-production-p2p-network"
+jwt_ttl_secs = 86400
+admin_user = "admin"
+admin_password = "admin123"
+max_connections = 100000
+enable_relay = true
+enable_p2p = true

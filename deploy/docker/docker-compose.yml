@@ -1,0 +1,17 @@
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "3000:3000"
+      - "7000:7000"
+      - "7001:7001"
+      - "8080:8080"
+    volumes:
+      - p2p-data:/opt/p2p/data
+      - ../../server/config/server.toml:/opt/p2p/server/config/server.toml:ro
+    restart: unless-stopped
+
+volumes:
+  p2p-data:

@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1.7
+FROM debian:stable-slim
+ARG TARGETARCH
+WORKDIR /opt/nexusgate
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+COPY --chmod=755 dist/nexusgate-edge-linux-${TARGETARCH} /usr/local/bin/p2p-edge
+COPY client/config/edge.toml /opt/nexusgate/client/config/edge.toml
+ENV RUST_LOG=info
+ENTRYPOINT ["p2p-edge", "--config", "/opt/nexusgate/client/config/edge.toml"]

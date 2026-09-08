@@ -1,0 +1,16 @@
+[Unit]
+Description=NexusGate Edge Client
+After=network.target
+
+[Service]
+Type=simple
+User=nexusgate
+WorkingDirectory=/opt/nexusgate
+ExecStart=/usr/local/bin/p2p-edge --config /opt/nexusgate/client/config/edge.toml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexusgate-server
+  namespace: nexusgate
+spec:
+  type: ClusterIP
+  selector:
+    app: nexusgate-server
+  ports:
+    - name: api
+      port: 3000
+      targetPort: api
+    - name: control
+      port: 7000
+      targetPort: control
+    - name: data
+      port: 7001
+      targetPort: data
+    - name: gateway
+      port: 8080
+      targetPort: gateway
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexusgate-web
+  namespace: nexusgate
+spec:
+  type: ClusterIP
+  selector:
+    app: nexusgate-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,25 @@
+services:
+  nexusgate-server:
+    image: ${NEXUSGATE_SERVER_IMAGE:-ghcr.io/clockclock1/nexusgate-server}:${NEXUSGATE_VERSION:-latest}
+    ports:
+      - "${NEXUSGATE_API_PORT:-3000}:3000"
+      - "${NEXUSGATE_CONTROL_PORT:-7000}:7000"
+      - "${NEXUSGATE_DATA_PORT:-7001}:7001"
+      - "${NEXUSGATE_GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - nexusgate-data:/opt/nexusgate/data
+      - ../../server/config/server.toml:/opt/nexusgate/server/config/server.toml:ro
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+
+  nexusgate-web:
+    image: ${NEXUSGATE_WEB_IMAGE:-ghcr.io/clockclock1/nexusgate-web}:${NEXUSGATE_VERSION:-latest}
+    ports:
+      - "${NEXUSGATE_WEB_PORT:-8088}:80"
+    depends_on:
+      - nexusgate-server
+    restart: unless-stopped
+
+volumes:
+  nexusgate-data:

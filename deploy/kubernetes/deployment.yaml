@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexusgate-server
+  namespace: nexusgate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nexusgate-server
+  template:
+    metadata:
+      labels:
+        app: nexusgate-server
+    spec:
+      containers:
+        - name: server
+          image: ghcr.io/clockclock1/nexusgate-server:latest
+          ports:
+            - containerPort: 3000
+              name: api
+            - containerPort: 7000
+              name: control
+            - containerPort: 7001
+              name: data
+            - containerPort: 8080
+              name: gateway
+          env:
+            - name: RUST_LOG
+              value: info
+          volumeMounts:
+            - name: data
+              mountPath: /opt/nexusgate/data
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nexusgate-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexusgate-web
+  namespace: nexusgate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nexusgate-web
+  template:
+    metadata:
+      labels:
+        app: nexusgate-web
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/clockclock1/nexusgate-web:latest
+          ports:
+            - containerPort: 80
+              name: http

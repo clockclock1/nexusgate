@@ -1,0 +1,9 @@
+﻿/target/
+web/node_modules/
+web/dist/
+data/
+*.db
+*.db-*
+.env
+.DS_Store
+p2p-network/

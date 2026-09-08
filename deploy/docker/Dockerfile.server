@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1.7
+FROM debian:stable-slim
+ARG TARGETARCH
+WORKDIR /opt/nexusgate
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+COPY --chmod=755 dist/nexusgate-server-linux-${TARGETARCH} /usr/local/bin/p2p-server
+COPY server/config/server.toml /opt/nexusgate/server/config/server.toml
+RUN mkdir -p /opt/nexusgate/data \
+  && sed -i 's|sqlite://data/p2p.db|sqlite:///opt/nexusgate/data/p2p.db|' /opt/nexusgate/server/config/server.toml
+ENV RUST_LOG=info
+EXPOSE 3000 7000 7001 8080
+VOLUME ["/opt/nexusgate/data"]
+ENTRYPOINT ["p2p-server", "--config", "/opt/nexusgate/server/config/server.toml"]

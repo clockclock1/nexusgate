@@ -1,0 +1,12 @@
+node_id = "edge-demo"
+token = "REPLACE_WITH_TOKEN_FROM_ADMIN"
+server = "127.0.0.1"
+control_port = 7000
+data_port = 7001
+name = "demo-edge"
+
+[[services]]
+service_id = "web"
+name = "local-web"
+protocol = "tcp"
+local_addr = "127.0.0.1:8000"

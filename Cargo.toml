@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "shared/common",
+    "shared/protocol",
+    "shared/control",
+    "shared/transport",
+    "shared/dataplane",
+    "shared/p2p",
+    "shared/router",
+    "shared/security",
+    "shared/metrics",
+    "server",
+    "client",
+]
+default-members = ["server", "client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["P2P Network Contributors"]
+repository = "https://github.com/example/p2p-network"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bytes = "1"
+dashmap = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+socket2 = "0.5"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
+jsonwebtoken = "9"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+futures = "0.3"
+parking_lot = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+bcrypt = "0.15"
+async-trait = "0.1"
+base64 = "0.22"
+
+# Internal crates
+p2p-common = { path = "shared/common" }
+p2p-protocol = { path = "shared/protocol" }
+p2p-control = { path = "shared/control" }
+p2p-transport = { path = "shared/transport" }
+p2p-dataplane = { path = "shared/dataplane" }
+p2p-p2p = { path = "shared/p2p" }
+p2p-router = { path = "shared/router" }
+p2p-security = { path = "shared/security" }
+p2p-metrics = { path = "shared/metrics" }

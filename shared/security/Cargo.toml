@@ -1,0 +1,20 @@
+[package]
+name = "p2p-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+p2p-common = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+jsonwebtoken = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+bcrypt = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]

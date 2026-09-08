@@ -1,0 +1,99 @@
+name: Build Executables
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-amd64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            server_artifact: nexusgate-server-windows-amd64.exe
+            edge_artifact: nexusgate-edge-windows-amd64.exe
+          - name: windows-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            server_artifact: nexusgate-server-windows-arm64.exe
+            edge_artifact: nexusgate-edge-windows-arm64.exe
+          - name: linux-amd64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            server_artifact: nexusgate-server-linux-amd64
+            edge_artifact: nexusgate-edge-linux-amd64
+          - name: linux-arm64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            server_artifact: nexusgate-server-linux-arm64
+            edge_artifact: nexusgate-edge-linux-arm64
+          - name: macos-amd64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            server_artifact: nexusgate-server-macos-amd64
+            edge_artifact: nexusgate-edge-macos-amd64
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            server_artifact: nexusgate-server-macos-arm64
+            edge_artifact: nexusgate-edge-macos-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux arm64 linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build server and edge
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
+          cargo build --release --locked --target "${{ matrix.target }}" -p p2p-server -p p2p-edge
+
+          server="target/${{ matrix.target }}/release/p2p-server"
+          edge="target/${{ matrix.target }}/release/p2p-edge"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            server="${server}.exe"
+            edge="${edge}.exe"
+          fi
+          cp "$server" "dist/${{ matrix.server_artifact }}"
+          cp "$edge" "dist/${{ matrix.edge_artifact }}"
+
+      - name: Upload executable artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/${{ matrix.server_artifact }}
+            dist/${{ matrix.edge_artifact }}
+          if-no-files-found: error
+
+      - name: Attach executables to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            dist/${{ matrix.server_artifact }}
+            dist/${{ matrix.edge_artifact }}
