@@ -133,6 +133,7 @@ sudo ng update-server      # 拉 GitHub 最新服务端并重启
 sudo ng update-client
 sudo ng config-server      # 逐项改服务端配置
 sudo ng config-client      # 逐项改客户端配置
+sudo ng show-config        # 查看当前配置（可加 server|client）
 sudo ng logs server
 sudo ng uninstall-client   # 完全卸载客户端
 sudo ng uninstall-server   # 完全卸载服务端（含数据）
@@ -147,6 +148,7 @@ sudo ng self-update        # 更新 ng 脚本自身
 | `start` / `stop` / `restart [server\|client\|all]` | 启停控制 |
 | `update-server` / `update-client` | 从 GitHub Release 更新二进制 |
 | `config-server` / `config-client` | **逐项交互配置**（可选重启），不直接打开编辑器 |
+| `show-config [server\|client\|all]` | 查看当前配置内容（敏感字段脱敏） |
 | `uninstall-server` / `uninstall-client` | **完全卸载**（配置/数据/单元） |
 | `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
 | `uninstall-ng` | 仅卸载管理脚本 `ng`（保留已装服务端/客户端） |

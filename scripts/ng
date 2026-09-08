@@ -1041,6 +1041,84 @@ cmd_status() {
   fi
 }
 
+# 展示配置时对敏感字段做简单脱敏（仍显示首尾便于核对）
+mask_config_line() {
+  local line="$1"
+  local key val pref
+  if [[ "$line" =~ ^[[:space:]]*(admin_password|jwt_secret|token)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+    key="${BASH_REMATCH[1]}"
+    val="${BASH_REMATCH[2]}"
+    val="${val%"${val##*[![:space:]]}"}"
+    if [[ "$val" == \"*\" && "$val" == *\" ]]; then
+      val="${val:1:$((${#val} - 2))}"
+      pref="\""
+    else
+      pref=""
+    fi
+    local n=${#val} shown
+    if ((n == 0)); then
+      shown=""
+    elif ((n <= 4)); then
+      shown="****"
+    elif ((n <= 8)); then
+      shown="${val:0:1}****${val: -1}"
+    else
+      shown="${val:0:3}****${val: -3}"
+    fi
+    if [[ -n "$pref" ]]; then
+      echo "${key} = \"${shown}\""
+    else
+      echo "${key} = ${shown}"
+    fi
+    return 0
+  fi
+  printf '%s\n' "$line"
+}
+
+print_config_file() {
+  local title="$1"
+  local file="$2"
+  echo
+  echo -e "${BOLD}-------- ${title} --------${NC}"
+  echo "路径: ${file}"
+  if [[ ! -f "$file" ]]; then
+    warn "配置文件不存在"
+    return 0
+  fi
+  echo "----- 内容（敏感字段已脱敏）-----"
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    mask_config_line "$line"
+  done <"$file"
+  echo "----- 结束 -----"
+}
+
+cmd_show_config() {
+  local t="${1:-}"
+  if [[ -z "$t" ]]; then
+    t="all"
+  fi
+  case "$t" in
+    server|s|client|c|edge|e|all|a) ;;
+    *) die "目标无效: $t（server|client|all）" ;;
+  esac
+  t="$(pick_target "$t")"
+
+  echo -e "${BOLD}NexusGate 当前配置${NC}"
+  case "$t" in
+    server)
+      print_config_file "服务端" "$SERVER_CFG"
+      ;;
+    client)
+      print_config_file "客户端" "$CLIENT_CFG"
+      ;;
+    all)
+      print_config_file "服务端" "$SERVER_CFG"
+      print_config_file "客户端" "$CLIENT_CFG"
+      ;;
+  esac
+}
+
 cmd_logs() {
   local t
   t="$(pick_target "${1:-server}")"
@@ -1102,6 +1180,7 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
 配置:
   config-server           逐项交互配置服务端（可选重启）
   config-client           逐项交互配置客户端（可选重启）
+  show-config [server|client|all]  查看当前配置（默认 all，敏感字段脱敏）
 
 其它:
   mirror                  设置 GitHub 镜像源（下载故障转移）
@@ -1116,6 +1195,7 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
   NG_MIRROR=https://ghproxy.net/ sudo -E ng install-server
   sudo ng install-server
   sudo ng config-client
+  sudo ng show-config
   sudo ng restart server
 EOF
 }
@@ -1231,6 +1311,7 @@ menu() {
     echo "  -------- 配置 --------"
     echo "  10) 配置服务端（逐项设置）"
     echo "  11) 配置客户端（逐项设置）"
+    echo "  20) 查看当前配置"
     echo
     echo "  -------- 卸载 --------"
     echo "  12) 卸载客户端（完全清理）"
@@ -1302,6 +1383,11 @@ menu() {
         menu_run cmd_config_client
         menu_finish
         ;;
+      20)
+        t="$(ask_target all)"
+        menu_run cmd_show_config "$t"
+        menu_finish
+        ;;
       12)
         menu_run cmd_uninstall_client
         menu_finish
@@ -1370,6 +1456,7 @@ main() {
     restart) cmd_restart "$@" ;;
     config-server|cs) cmd_config_server "$@" ;;
     config-client|cc) cmd_config_client "$@" ;;
+    show-config|sc|view-config|vc) cmd_show_config "$@" ;;
     status|st) cmd_status "$@" ;;
     logs|log)  cmd_logs "$@" ;;
     self-update) cmd_self_update "$@" ;;
