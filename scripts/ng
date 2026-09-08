@@ -1041,40 +1041,6 @@ cmd_status() {
   fi
 }
 
-# 展示配置时对敏感字段做简单脱敏（仍显示首尾便于核对）
-mask_config_line() {
-  local line="$1"
-  local key val pref
-  if [[ "$line" =~ ^[[:space:]]*(admin_password|jwt_secret|token)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
-    key="${BASH_REMATCH[1]}"
-    val="${BASH_REMATCH[2]}"
-    val="${val%"${val##*[![:space:]]}"}"
-    if [[ "$val" == \"*\" && "$val" == *\" ]]; then
-      val="${val:1:$((${#val} - 2))}"
-      pref="\""
-    else
-      pref=""
-    fi
-    local n=${#val} shown
-    if ((n == 0)); then
-      shown=""
-    elif ((n <= 4)); then
-      shown="****"
-    elif ((n <= 8)); then
-      shown="${val:0:1}****${val: -1}"
-    else
-      shown="${val:0:3}****${val: -3}"
-    fi
-    if [[ -n "$pref" ]]; then
-      echo "${key} = \"${shown}\""
-    else
-      echo "${key} = ${shown}"
-    fi
-    return 0
-  fi
-  printf '%s\n' "$line"
-}
-
 print_config_file() {
   local title="$1"
   local file="$2"
@@ -1085,11 +1051,9 @@ print_config_file() {
     warn "配置文件不存在"
     return 0
   fi
-  echo "----- 内容（敏感字段已脱敏）-----"
-  local line
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    mask_config_line "$line"
-  done <"$file"
+  echo "----- 内容 -----"
+  cat "$file"
+  echo
   echo "----- 结束 -----"
 }
 
@@ -1180,7 +1144,7 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
 配置:
   config-server           逐项交互配置服务端（可选重启）
   config-client           逐项交互配置客户端（可选重启）
-  show-config [server|client|all]  查看当前配置（默认 all，敏感字段脱敏）
+  show-config [server|client|all]  查看当前配置（默认 all）
 
 其它:
   mirror                  设置 GitHub 镜像源（下载故障转移）
@@ -1202,18 +1166,19 @@ EOF
 
 ask_target() {
   # $1 = default label for hint: all|server
+  # 提示必须打到 stderr，避免被 t="$(ask_target)" 吃掉
   local def="${1:-all}"
-  echo
-  echo "  选择目标:"
-  echo "    1) server  (服务端)"
-  echo "    2) client  (客户端)"
-  echo "    3) all     (全部)"
-  echo -n "  请输入数字 [默认 $([[ "$def" == "server" ]] && echo 1 || echo 3)]: "
+  echo >&2
+  echo "  选择目标:" >&2
+  echo "    1) server  (服务端)" >&2
+  echo "    2) client  (客户端)" >&2
+  echo "    3) all     (全部)" >&2
+  echo -n "  请输入数字 [默认 $([[ "$def" == "server" ]] && echo 1 || echo 3)]: " >&2
   local c
-  read -r c
+  read -r c || true
   if [[ -z "$c" ]]; then
     if [[ "$def" == "server" ]]; then echo server; else echo all; fi
-    return
+    return 0
   fi
   case "$c" in
     1) echo server ;;

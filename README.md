@@ -148,7 +148,7 @@ sudo ng self-update        # 更新 ng 脚本自身
 | `start` / `stop` / `restart [server\|client\|all]` | 启停控制 |
 | `update-server` / `update-client` | 从 GitHub Release 更新二进制 |
 | `config-server` / `config-client` | **逐项交互配置**（可选重启），不直接打开编辑器 |
-| `show-config [server\|client\|all]` | 查看当前配置内容（敏感字段脱敏） |
+| `show-config [server\|client\|all]` | 查看当前配置内容 |
 | `uninstall-server` / `uninstall-client` | **完全卸载**（配置/数据/单元） |
 | `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
 | `uninstall-ng` | 仅卸载管理脚本 `ng`（保留已装服务端/客户端） |
