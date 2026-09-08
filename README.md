@@ -127,7 +127,8 @@ sudo ng config-server
 sudo ng logs server
 sudo ng uninstall-client   # 完全卸载客户端
 sudo ng uninstall-server   # 完全卸载服务端（含数据）
-sudo ng uninstall-all      # 清空全部
+sudo ng uninstall-all      # 清空全部组件与数据
+sudo ng uninstall-ng       # 仅卸载 ng 管理脚本
 sudo ng self-update        # 更新 ng 脚本自身
 ```
 
