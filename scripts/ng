@@ -1155,7 +1155,21 @@ pause() {
   read -r _ || true
 }
 
-# 在菜单中执行命令：失败只提示，不退出整个菜单（0 退出除外）
+ng_manager_installed() {
+  [[ -f "$NG_LINK" || -L "$NG_LINK" ]]
+}
+
+# 菜单操作结束后：若 ng 已被卸掉则直接退出，不再回菜单
+menu_finish() {
+  if ! ng_manager_installed; then
+    echo
+    log "管理脚本 ng 已不存在，退出。"
+    exit 0
+  fi
+  pause
+}
+
+# 在菜单中执行命令：失败只提示，不退出整个菜单（0 退出 / 已卸 ng 除外）
 menu_run() {
   set +e
   (
@@ -1238,38 +1252,38 @@ menu() {
     case "$choice" in
       1)
         menu_run cmd_install_server
-        pause
+        menu_finish
         ;;
       2)
         menu_run cmd_install_client
-        pause
+        menu_finish
         ;;
       3)
         menu_run cmd_update_server
-        pause
+        menu_finish
         ;;
       4)
         menu_run cmd_update_client
-        pause
+        menu_finish
         ;;
       5)
         t="$(ask_target all)"
         menu_run cmd_start "$t"
-        pause
+        menu_finish
         ;;
       6)
         t="$(ask_target all)"
         menu_run cmd_restart "$t"
-        pause
+        menu_finish
         ;;
       7)
         t="$(ask_target all)"
         menu_run cmd_stop "$t"
-        pause
+        menu_finish
         ;;
       8)
         menu_run cmd_status
-        pause
+        menu_finish
         ;;
       9)
         t="$(ask_target server)"
@@ -1278,52 +1292,48 @@ menu() {
         set +e
         cmd_logs "$t"
         set -e
-        pause
+        menu_finish
         ;;
       10)
         menu_run cmd_config_server
-        pause
+        menu_finish
         ;;
       11)
         menu_run cmd_config_client
-        pause
+        menu_finish
         ;;
       12)
         menu_run cmd_uninstall_client
-        pause
+        menu_finish
         ;;
       13)
         menu_run cmd_uninstall_server
-        pause
+        menu_finish
         ;;
       14)
         menu_run cmd_uninstall_all
-        pause
+        menu_finish
         ;;
       15)
         menu_run cmd_self_update
-        pause
+        menu_finish
         ;;
       16)
         print_help
-        pause
+        menu_finish
         ;;
       17)
         menu_run cmd_mirror
-        pause
+        menu_finish
         ;;
       18)
         menu_run cmd_test_mirror
-        pause
+        menu_finish
         ;;
       19)
         menu_run cmd_uninstall_ng
-        # 脚本已删则直接退出，不再回菜单
-        if [[ ! -f "$NG_LINK" && ! -L "$NG_LINK" ]]; then
-          echo "ng 已卸载，退出。"
-          exit 0
-        fi
-        pause
+        # 卸掉 ng 后直接退出，不回菜单、不 pause
+        menu_finish
         ;;
       0|q|Q)
         echo "已退出。"
