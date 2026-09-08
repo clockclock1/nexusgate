@@ -1,0 +1,678 @@
+#!/usr/bin/env bash
+# NexusGate Linux manager — invoke as: ng
+# Install self: curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
+
+set -euo pipefail
+
+NG_CMD_NAME="ng"
+REPO="clockclock1/nexusgate"
+GITHUB_API="https://api.github.com/repos/${REPO}"
+GITHUB_RAW="https://raw.githubusercontent.com/${REPO}/main"
+
+PREFIX="/opt/nexusgate"
+BIN_DIR="${PREFIX}/bin"
+SERVER_BIN="${BIN_DIR}/p2p-server"
+EDGE_BIN="${BIN_DIR}/p2p-edge"
+SERVER_CFG_DIR="${PREFIX}/server/config"
+CLIENT_CFG_DIR="${PREFIX}/client/config"
+SERVER_CFG="${SERVER_CFG_DIR}/server.toml"
+CLIENT_CFG="${CLIENT_CFG_DIR}/edge.toml"
+DATA_DIR="${PREFIX}/data"
+STATE_DIR="${PREFIX}/.state"
+VERSION_FILE="${STATE_DIR}/version"
+SERVER_UNIT="nexusgate-server.service"
+EDGE_UNIT="nexusgate-edge.service"
+SYSUSER="nexusgate"
+NG_LINK="/usr/local/bin/${NG_CMD_NAME}"
+
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'
+NC=$'\033[0m'
+
+log()  { echo -e "${GREEN}[ng]${NC} $*"; }
+warn() { echo -e "${YELLOW}[ng]${NC} $*"; }
+err()  { echo -e "${RED}[ng]${NC} $*" >&2; }
+die()  { err "$*"; exit 1; }
+
+need_root() {
+  if [[ ${EUID} -ne 0 ]]; then
+    die "请使用 root 运行：sudo ng $*"
+  fi
+}
+
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+detect_arch() {
+  local m
+  m="$(uname -m)"
+  case "$m" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *) die "不支持的架构: $m（仅 linux-amd64 / linux-arm64）" ;;
+  esac
+}
+
+ensure_tools() {
+  local miss=()
+  have_cmd curl || miss+=(curl)
+  have_cmd systemctl || miss+=(systemd)
+  if ((${#miss[@]})); then
+    die "缺少依赖: ${miss[*]}"
+  fi
+}
+
+ensure_dirs() {
+  mkdir -p "$BIN_DIR" "$SERVER_CFG_DIR" "$CLIENT_CFG_DIR" "$DATA_DIR" "$STATE_DIR"
+}
+
+ensure_user() {
+  if ! id -u "$SYSUSER" >/dev/null 2>&1; then
+    useradd --system --home-dir "$PREFIX" --shell /usr/sbin/nologin "$SYSUSER" 2>/dev/null \
+      || useradd --system --home-dir "$PREFIX" --shell /bin/false "$SYSUSER"
+    log "已创建系统用户 ${SYSUSER}"
+  fi
+  chown -R "${SYSUSER}:${SYSUSER}" "$PREFIX" 2>/dev/null || true
+}
+
+fix_ownership() {
+  chown -R "${SYSUSER}:${SYSUSER}" "$PREFIX"
+  chmod 755 "$BIN_DIR" 2>/dev/null || true
+  [[ -f "$SERVER_BIN" ]] && chmod 755 "$SERVER_BIN"
+  [[ -f "$EDGE_BIN" ]] && chmod 755 "$EDGE_BIN"
+}
+
+latest_tag() {
+  curl -fsSL "${GITHUB_API}/releases/latest" \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n1
+}
+
+asset_url() {
+  # $1 = asset name substring, e.g. nexusgate-server-linux-amd64
+  local want="$1"
+  local json
+  json="$(curl -fsSL "${GITHUB_API}/releases/latest")"
+  # Prefer browser_download_url matching exact asset name
+  echo "$json" | tr ',' '\n' | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | grep -F "/${want}" | head -n1
+}
+
+download_asset() {
+  local asset="$1"
+  local dest="$2"
+  local url
+  url="$(asset_url "$asset")"
+  [[ -n "$url" ]] || die "GitHub Release 中未找到资产: ${asset}
+请先到 https://github.com/${REPO}/releases 发布包含 Linux 二进制的 Release。"
+  log "下载 ${asset} ..."
+  curl -fL --progress-bar -o "$dest" "$url"
+  chmod 755 "$dest"
+}
+
+write_server_unit() {
+  cat >"/etc/systemd/system/${SERVER_UNIT}" <<EOF
+[Unit]
+Description=NexusGate Server (Super Node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SYSUSER}
+Group=${SYSUSER}
+WorkingDirectory=${PREFIX}
+ExecStart=${SERVER_BIN} --config ${SERVER_CFG}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+Environment=RUST_LOG=info
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+write_edge_unit() {
+  cat >"/etc/systemd/system/${EDGE_UNIT}" <<EOF
+[Unit]
+Description=NexusGate Edge Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SYSUSER}
+Group=${SYSUSER}
+WorkingDirectory=${PREFIX}
+ExecStart=${EDGE_BIN} --config ${CLIENT_CFG}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+Environment=RUST_LOG=info
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+default_server_config() {
+  cat >"$SERVER_CFG" <<'EOF'
+listen = "0.0.0.0"
+control_port = 7000
+data_port = 7001
+gateway_port = 8080
+api_port = 3000
+database_url = "sqlite:///opt/nexusgate/data/p2p.db"
+jwt_secret = "change-me-in-production-nexusgate"
+jwt_ttl_secs = 86400
+admin_user = "admin"
+admin_password = "admin123"
+max_connections = 100000
+enable_relay = true
+enable_p2p = true
+EOF
+}
+
+default_client_config() {
+  cat >"$CLIENT_CFG" <<'EOF'
+node_id = "edge-demo"
+token = "REPLACE_WITH_TOKEN_FROM_ADMIN"
+server = "127.0.0.1"
+control_port = 7000
+data_port = 7001
+name = "demo-edge"
+
+[[services]]
+service_id = "web"
+name = "local-web"
+protocol = "tcp"
+local_addr = "127.0.0.1:8000"
+EOF
+}
+
+unit_exists() { [[ -f "/etc/systemd/system/$1" ]]; }
+
+svc_do() {
+  local action="$1"
+  local unit="$2"
+  systemctl daemon-reload
+  systemctl "$action" "$unit"
+}
+
+installed_server() { [[ -x "$SERVER_BIN" ]] && unit_exists "$SERVER_UNIT"; }
+installed_client() { [[ -x "$EDGE_BIN" ]] && unit_exists "$EDGE_UNIT"; }
+
+cmd_install_server() {
+  need_root "install-server"
+  ensure_tools
+  ensure_dirs
+  ensure_user
+  local arch tag asset
+  arch="$(detect_arch)"
+  tag="$(latest_tag)"
+  [[ -n "$tag" ]] || die "无法获取最新 Release 版本"
+  asset="nexusgate-server-linux-${arch}"
+  download_asset "$asset" "$SERVER_BIN"
+  if [[ ! -f "$SERVER_CFG" ]]; then
+    default_server_config
+    log "已写入默认配置 ${SERVER_CFG}"
+  else
+    warn "保留已有配置 ${SERVER_CFG}"
+  fi
+  # normalize db path for install layout
+  if grep -q 'sqlite://data/p2p.db' "$SERVER_CFG" 2>/dev/null; then
+    sed -i 's|sqlite://data/p2p.db|sqlite:///opt/nexusgate/data/p2p.db|' "$SERVER_CFG"
+  fi
+  write_server_unit
+  fix_ownership
+  echo "$tag" >"$VERSION_FILE"
+  systemctl daemon-reload
+  systemctl enable --now "$SERVER_UNIT"
+  log "服务端已安装并开机自启（版本 ${tag}）"
+  log "API: http://0.0.0.0:3000  Gateway: :8080  Control: :7000  Data: :7001"
+  log "默认账号 admin / admin123 ，请尽快修改配置"
+}
+
+cmd_install_client() {
+  need_root "install-client"
+  ensure_tools
+  ensure_dirs
+  ensure_user
+  local arch tag asset
+  arch="$(detect_arch)"
+  tag="$(latest_tag)"
+  [[ -n "$tag" ]] || die "无法获取最新 Release 版本"
+  asset="nexusgate-edge-linux-${arch}"
+  download_asset "$asset" "$EDGE_BIN"
+  if [[ ! -f "$CLIENT_CFG" ]]; then
+    default_client_config
+    log "已写入默认配置 ${CLIENT_CFG}"
+    warn "请先执行: sudo ng config-client 填写 node_id / token / server"
+  else
+    warn "保留已有配置 ${CLIENT_CFG}"
+  fi
+  write_edge_unit
+  fix_ownership
+  echo "$tag" >"$VERSION_FILE"
+  systemctl daemon-reload
+  systemctl enable --now "$EDGE_UNIT"
+  log "客户端已安装并开机自启（版本 ${tag}）"
+}
+
+cmd_update_server() {
+  need_root "update-server"
+  installed_server || die "服务端未安装，请先: sudo ng install-server"
+  ensure_tools
+  local arch tag asset running=0
+  arch="$(detect_arch)"
+  tag="$(latest_tag)"
+  [[ -n "$tag" ]] || die "无法获取最新 Release"
+  asset="nexusgate-server-linux-${arch}"
+  if systemctl is-active --quiet "$SERVER_UNIT"; then running=1; systemctl stop "$SERVER_UNIT"; fi
+  download_asset "$asset" "${SERVER_BIN}.new"
+  mv -f "${SERVER_BIN}.new" "$SERVER_BIN"
+  echo "$tag" >"$VERSION_FILE"
+  fix_ownership
+  systemctl daemon-reload
+  systemctl start "$SERVER_UNIT"
+  log "服务端已更新到 ${tag}"
+}
+
+cmd_update_client() {
+  need_root "update-client"
+  installed_client || die "客户端未安装，请先: sudo ng install-client"
+  ensure_tools
+  local arch tag asset running=0
+  arch="$(detect_arch)"
+  tag="$(latest_tag)"
+  [[ -n "$tag" ]] || die "无法获取最新 Release"
+  asset="nexusgate-edge-linux-${arch}"
+  if systemctl is-active --quiet "$EDGE_UNIT"; then running=1; systemctl stop "$EDGE_UNIT"; fi
+  download_asset "$asset" "${EDGE_BIN}.new"
+  mv -f "${EDGE_BIN}.new" "$EDGE_BIN"
+  echo "$tag" >"$VERSION_FILE"
+  fix_ownership
+  systemctl daemon-reload
+  systemctl start "$EDGE_UNIT"
+  log "客户端已更新到 ${tag}"
+}
+
+pick_target() {
+  local t="${1:-}"
+  case "$t" in
+    server|s) echo server ;;
+    client|edge|c|e) echo client ;;
+    all|a|"") echo all ;;
+    *) die "目标无效: $t（server|client|all）" ;;
+  esac
+}
+
+cmd_start() {
+  need_root "start"
+  local t
+  t="$(pick_target "${1:-all}")"
+  case "$t" in
+    server)
+      installed_server || die "服务端未安装"
+      svc_do start "$SERVER_UNIT"
+      ;;
+    client)
+      installed_client || die "客户端未安装"
+      svc_do start "$EDGE_UNIT"
+      ;;
+    all)
+      installed_server && svc_do start "$SERVER_UNIT" || warn "跳过服务端（未安装）"
+      installed_client && svc_do start "$EDGE_UNIT" || warn "跳过客户端（未安装）"
+      ;;
+  esac
+  log "已启动: $t"
+}
+
+cmd_stop() {
+  need_root "stop"
+  local t
+  t="$(pick_target "${1:-all}")"
+  case "$t" in
+    server) unit_exists "$SERVER_UNIT" && svc_do stop "$SERVER_UNIT" || true ;;
+    client) unit_exists "$EDGE_UNIT" && svc_do stop "$EDGE_UNIT" || true ;;
+    all)
+      unit_exists "$SERVER_UNIT" && svc_do stop "$SERVER_UNIT" || true
+      unit_exists "$EDGE_UNIT" && svc_do stop "$EDGE_UNIT" || true
+      ;;
+  esac
+  log "已停止: $t"
+}
+
+cmd_restart() {
+  need_root "restart"
+  local t
+  t="$(pick_target "${1:-all}")"
+  case "$t" in
+    server)
+      installed_server || die "服务端未安装"
+      svc_do restart "$SERVER_UNIT"
+      ;;
+    client)
+      installed_client || die "客户端未安装"
+      svc_do restart "$EDGE_UNIT"
+      ;;
+    all)
+      installed_server && svc_do restart "$SERVER_UNIT" || warn "跳过服务端"
+      installed_client && svc_do restart "$EDGE_UNIT" || warn "跳过客户端"
+      ;;
+  esac
+  log "已重启: $t"
+}
+
+edit_file() {
+  local f="$1"
+  [[ -f "$f" ]] || die "配置不存在: $f"
+  local editor="${EDITOR:-}"
+  if [[ -z "$editor" ]]; then
+    if have_cmd nano; then editor=nano
+    elif have_cmd vi; then editor=vi
+    else die "未找到编辑器，请设置 EDITOR 或安装 nano"
+    fi
+  fi
+  "$editor" "$f"
+}
+
+cmd_config_server() {
+  need_root "config-server"
+  [[ -f "$SERVER_CFG" ]] || die "服务端未安装或配置缺失"
+  edit_file "$SERVER_CFG"
+  if unit_exists "$SERVER_UNIT"; then
+    read -r -p "配置已保存，是否立即重启服务端? [Y/n] " ans
+    ans="${ans:-Y}"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      svc_do restart "$SERVER_UNIT"
+      log "服务端已重启"
+    fi
+  fi
+}
+
+cmd_config_client() {
+  need_root "config-client"
+  [[ -f "$CLIENT_CFG" ]] || die "客户端未安装或配置缺失"
+  edit_file "$CLIENT_CFG"
+  if unit_exists "$EDGE_UNIT"; then
+    read -r -p "配置已保存，是否立即重启客户端? [Y/n] " ans
+    ans="${ans:-Y}"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      svc_do restart "$EDGE_UNIT"
+      log "客户端已重启"
+    fi
+  fi
+}
+
+purge_server_files() {
+  rm -f "$SERVER_BIN" "${SERVER_BIN}.new"
+  rm -rf "${PREFIX}/server"
+  # server-owned data (sqlite etc.)
+  rm -rf "$DATA_DIR"
+  rm -f "/etc/systemd/system/${SERVER_UNIT}"
+  rm -f "/etc/systemd/system/multi-user.target.wants/${SERVER_UNIT}"
+}
+
+purge_client_files() {
+  rm -f "$EDGE_BIN" "${EDGE_BIN}.new"
+  rm -rf "${PREFIX}/client"
+  rm -f "/etc/systemd/system/${EDGE_UNIT}"
+  rm -f "/etc/systemd/system/multi-user.target.wants/${EDGE_UNIT}"
+}
+
+maybe_purge_all() {
+  # If neither component remains, wipe prefix, user, and optionally ng itself
+  if [[ ! -x "$SERVER_BIN" && ! -x "$EDGE_BIN" ]]; then
+    systemctl daemon-reload || true
+    rm -rf "$PREFIX"
+    if id -u "$SYSUSER" >/dev/null 2>&1; then
+      userdel "$SYSUSER" 2>/dev/null || true
+      log "已删除系统用户 ${SYSUSER}"
+    fi
+    log "已清理目录 ${PREFIX}"
+  else
+    systemctl daemon-reload || true
+    fix_ownership 2>/dev/null || true
+  fi
+}
+
+cmd_uninstall_server() {
+  need_root "uninstall-server"
+  warn "将完全卸载服务端：二进制、systemd、配置、数据库与数据目录"
+  read -r -p "确认卸载服务端? 输入 yes 继续: " ans
+  [[ "$ans" == "yes" ]] || die "已取消"
+  unit_exists "$SERVER_UNIT" && systemctl disable --now "$SERVER_UNIT" 2>/dev/null || true
+  purge_server_files
+  maybe_purge_all
+  log "服务端已完全卸载"
+}
+
+cmd_uninstall_client() {
+  need_root "uninstall-client"
+  warn "将完全卸载客户端：二进制、systemd、配置"
+  read -r -p "确认卸载客户端? 输入 yes 继续: " ans
+  [[ "$ans" == "yes" ]] || die "已取消"
+  unit_exists "$EDGE_UNIT" && systemctl disable --now "$EDGE_UNIT" 2>/dev/null || true
+  purge_client_files
+  maybe_purge_all
+  log "客户端已完全卸载"
+}
+
+cmd_uninstall_all() {
+  need_root "uninstall-all"
+  warn "将卸载服务端+客户端，并删除 ${PREFIX}、systemd 单元与用户 ${SYSUSER}"
+  read -r -p "确认完全卸载 NexusGate? 输入 YES 继续: " ans
+  [[ "$ans" == "YES" ]] || die "已取消"
+  unit_exists "$SERVER_UNIT" && systemctl disable --now "$SERVER_UNIT" 2>/dev/null || true
+  unit_exists "$EDGE_UNIT" && systemctl disable --now "$EDGE_UNIT" 2>/dev/null || true
+  purge_server_files
+  purge_client_files
+  systemctl daemon-reload || true
+  rm -rf "$PREFIX"
+  if id -u "$SYSUSER" >/dev/null 2>&1; then
+    userdel "$SYSUSER" 2>/dev/null || true
+  fi
+  if [[ -L "$NG_LINK" || -f "$NG_LINK" ]]; then
+    read -r -p "是否同时删除管理命令 ${NG_LINK}? [y/N] " rmng
+    if [[ "${rmng:-N}" =~ ^[Yy]$ ]]; then
+      rm -f "$NG_LINK"
+      log "已删除 ${NG_LINK}"
+    fi
+  fi
+  log "NexusGate 已完全卸载"
+}
+
+cmd_status() {
+  echo -e "${BOLD}NexusGate 状态${NC}"
+  echo "安装目录: ${PREFIX}"
+  if [[ -f "$VERSION_FILE" ]]; then
+    echo "本地版本: $(cat "$VERSION_FILE")"
+  else
+    echo "本地版本: (未知)"
+  fi
+  local remote=""
+  remote="$(latest_tag 2>/dev/null || true)"
+  [[ -n "$remote" ]] && echo "GitHub 最新: ${remote}"
+  echo
+  if installed_server || unit_exists "$SERVER_UNIT"; then
+    echo -e "${CYAN}服务端${NC}: $(systemctl is-active "$SERVER_UNIT" 2>/dev/null || echo unknown) / $(systemctl is-enabled "$SERVER_UNIT" 2>/dev/null || echo unknown)"
+    echo "  二进制: $SERVER_BIN"
+    echo "  配置:   $SERVER_CFG"
+    echo "  数据:   $DATA_DIR"
+  else
+    echo -e "${CYAN}服务端${NC}: 未安装"
+  fi
+  echo
+  if installed_client || unit_exists "$EDGE_UNIT"; then
+    echo -e "${CYAN}客户端${NC}: $(systemctl is-active "$EDGE_UNIT" 2>/dev/null || echo unknown) / $(systemctl is-enabled "$EDGE_UNIT" 2>/dev/null || echo unknown)"
+    echo "  二进制: $EDGE_BIN"
+    echo "  配置:   $CLIENT_CFG"
+  else
+    echo -e "${CYAN}客户端${NC}: 未安装"
+  fi
+}
+
+cmd_logs() {
+  local t
+  t="$(pick_target "${1:-server}")"
+  case "$t" in
+    server) journalctl -u "$SERVER_UNIT" -f --no-pager ;;
+    client) journalctl -u "$EDGE_UNIT" -f --no-pager ;;
+    all)
+      journalctl -u "$SERVER_UNIT" -u "$EDGE_UNIT" -f --no-pager
+      ;;
+  esac
+}
+
+cmd_self_update() {
+  need_root "self-update"
+  local tmp
+  tmp="$(mktemp)"
+  curl -fsSL "${GITHUB_RAW}/scripts/ng" -o "$tmp"
+  chmod 755 "$tmp"
+  # basic sanity
+  grep -q 'NexusGate Linux manager' "$tmp" || die "下载的脚本校验失败"
+  install -m 755 "$tmp" "$NG_LINK"
+  rm -f "$tmp"
+  # also keep a copy under prefix if present
+  if [[ -d "$PREFIX" ]]; then
+    mkdir -p "${PREFIX}/scripts"
+    cp -f "$NG_LINK" "${PREFIX}/scripts/ng"
+  fi
+  log "管理脚本已更新: ${NG_LINK}"
+}
+
+print_help() {
+  cat <<EOF
+${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
+
+用法:
+  sudo ng <命令> [参数]
+
+安装 / 更新 / 卸载:
+  install-server          安装服务端（systemd 开机自启，从 GitHub 拉最新版）
+  install-client          安装客户端（systemd 开机自启，从 GitHub 拉最新版）
+  update-server           更新服务端到 GitHub 最新 Release
+  update-client           更新客户端到 GitHub 最新 Release
+  uninstall-server        完全卸载服务端（含配置与数据）
+  uninstall-client        完全卸载客户端（含配置）
+  uninstall-all           卸载全部并清理 /opt/nexusgate 与系统用户
+
+运行控制:
+  start   [server|client|all]    启动（默认 all）
+  stop    [server|client|all]    停止
+  restart [server|client|all]    重启
+  status                         查看状态
+  logs    [server|client|all]    跟踪日志
+
+配置:
+  config-server           编辑服务端配置并可选重启
+  config-client           编辑客户端配置并可选重启
+
+其它:
+  self-update             更新本管理脚本 ng
+  help                    显示帮助
+  menu                    交互菜单（默认）
+
+示例:
+  sudo ng install-server
+  sudo ng config-client
+  sudo ng restart server
+  sudo ng update-server
+  sudo ng uninstall-all
+EOF
+}
+
+menu() {
+  while true; do
+    echo
+    echo -e "${BOLD}======== NexusGate 管理 (ng) ========${NC}"
+    echo "  1) 安装服务端"
+    echo "  2) 安装客户端"
+    echo "  3) 启动"
+    echo "  4) 重启"
+    echo "  5) 关闭"
+    echo "  6) 更新服务端"
+    echo "  7) 更新客户端"
+    echo "  8) 配置服务端"
+    echo "  9) 配置客户端"
+    echo " 10) 卸载客户端"
+    echo " 11) 卸载服务端"
+    echo " 12) 状态"
+    echo " 13) 日志"
+    echo " 14) 完全卸载(全部)"
+    echo " 15) 更新管理脚本"
+    echo "  0) 退出"
+    echo -n "请选择: "
+    read -r choice
+    case "$choice" in
+      1) cmd_install_server ;;
+      2) cmd_install_client ;;
+      3)
+        echo -n "目标 server/client/all [all]: "; read -r t
+        cmd_start "${t:-all}"
+        ;;
+      4)
+        echo -n "目标 server/client/all [all]: "; read -r t
+        cmd_restart "${t:-all}"
+        ;;
+      5)
+        echo -n "目标 server/client/all [all]: "; read -r t
+        cmd_stop "${t:-all}"
+        ;;
+      6) cmd_update_server ;;
+      7) cmd_update_client ;;
+      8) cmd_config_server ;;
+      9) cmd_config_client ;;
+      10) cmd_uninstall_client ;;
+      11) cmd_uninstall_server ;;
+      12) cmd_status ;;
+      13)
+        echo -n "目标 server/client/all [server]: "; read -r t
+        cmd_logs "${t:-server}"
+        ;;
+      14) cmd_uninstall_all ;;
+      15) cmd_self_update ;;
+      0) exit 0 ;;
+      *) warn "无效选项" ;;
+    esac
+  done
+}
+
+main() {
+  local cmd="${1:-menu}"
+  shift || true
+  case "$cmd" in
+    install-server|is) cmd_install_server "$@" ;;
+    install-client|ic) cmd_install_client "$@" ;;
+    update-server|us)  cmd_update_server "$@" ;;
+    update-client|uc)  cmd_update_client "$@" ;;
+    uninstall-server|rs) cmd_uninstall_server "$@" ;;
+    uninstall-client|rc) cmd_uninstall_client "$@" ;;
+    uninstall-all|ra)    cmd_uninstall_all "$@" ;;
+    start)   cmd_start "$@" ;;
+    stop)    cmd_stop "$@" ;;
+    restart) cmd_restart "$@" ;;
+    config-server|cs) cmd_config_server "$@" ;;
+    config-client|cc) cmd_config_client "$@" ;;
+    status|st) cmd_status "$@" ;;
+    logs|log)  cmd_logs "$@" ;;
+    self-update) cmd_self_update "$@" ;;
+    menu|m) menu ;;
+    help|-h|--help) print_help ;;
+    *)
+      err "未知命令: $cmd"
+      print_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

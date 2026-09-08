@@ -2,6 +2,15 @@
 
 完整说明见根目录 [README.md](../README.md)。
 
+## Linux 管理脚本 `ng`
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
+sudo ng menu
+```
+
+源码见 `scripts/ng`、`scripts/install-ng.sh`。
+
 ## 二进制
 
 ```bash

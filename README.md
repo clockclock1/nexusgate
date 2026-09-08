@@ -120,6 +120,44 @@ Dashboard / Server / Nodes / Services / Routes / P2P / Connections / Traffic / L
 
 ---
 
+## Linux 一键管理（`ng`）
+
+在任意 Linux 主机上安装简称命令 `ng`，之后可随时唤起管理菜单：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
+sudo ng          # 交互菜单
+sudo ng help     # 命令帮助
+```
+
+| 命令 | 说明 |
+|------|------|
+| `sudo ng install-server` | 安装服务端，写入 systemd 并开机自启 |
+| `sudo ng install-client` | 安装客户端，写入 systemd 并开机自启 |
+| `sudo ng start\|stop\|restart [server\|client\|all]` | 启停控制 |
+| `sudo ng update-server` / `update-client` | 从 GitHub Release 拉最新二进制并重启 |
+| `sudo ng config-server` / `config-client` | 编辑配置并可选重启 |
+| `sudo ng uninstall-server` / `uninstall-client` | **完全卸载**（含配置/数据/单元） |
+| `sudo ng uninstall-all` | 清空 `/opt/nexusgate`、systemd、系统用户 |
+| `sudo ng status` / `logs` | 状态与日志 |
+| `sudo ng self-update` | 更新管理脚本自身 |
+
+安装落盘位置：
+
+```text
+/usr/local/bin/ng
+/opt/nexusgate/bin/p2p-server|p2p-edge
+/opt/nexusgate/server/config/server.toml
+/opt/nexusgate/client/config/edge.toml
+/opt/nexusgate/data/
+/etc/systemd/system/nexusgate-server.service
+/etc/systemd/system/nexusgate-edge.service
+```
+
+> 更新/安装二进制依赖 GitHub Release 资产：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`。请先发布 Release 或触发 Actions 产物挂载。
+
+---
+
 ## 部署方式
 
 ### A. Release 二进制
