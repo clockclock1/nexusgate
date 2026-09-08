@@ -157,6 +157,26 @@ sudo ng self-update        # 更新 ng 脚本自身
 
 > 二进制安装/更新依赖 Release 资产名：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`。请先在仓库发布 Release（Actions 会自动挂载产物）。
 
+### GitHub 镜像源（国内网络）
+
+安装/更新会 **官方源优先，失败自动切换镜像重试**。也可指定优先镜像：
+
+```bash
+# 安装 ng 时就走镜像（并写入后续默认）
+NG_MIRROR=https://ghproxy.net/ curl -fsSL \
+  https://ghproxy.net/https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh \
+  | sudo -E bash
+
+# 已安装后设置
+sudo ng mirror          # 菜单选择镜像
+sudo ng test-mirror     # 探测官方/镜像是否可达
+
+# 临时指定
+NG_MIRROR=https://ghproxy.net/ sudo -E ng update-server
+```
+
+内置候选镜像包括：`ghproxy.net`、`mirror.ghproxy.com`、`ghfast.top`、`gh.ddlc.top`、`gitclone.com` 等。
+
 ---
 
 ## 快速开始（源码开发）

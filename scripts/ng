@@ -20,10 +20,21 @@ CLIENT_CFG="${CLIENT_CFG_DIR}/edge.toml"
 DATA_DIR="${PREFIX}/data"
 STATE_DIR="${PREFIX}/.state"
 VERSION_FILE="${STATE_DIR}/version"
+MIRROR_FILE="${STATE_DIR}/mirror"
 SERVER_UNIT="nexusgate-server.service"
 EDGE_UNIT="nexusgate-edge.service"
 SYSUSER="nexusgate"
 NG_LINK="/usr/local/bin/${NG_CMD_NAME}"
+
+# GitHub 下载镜像前缀（把完整 https://github.com/... URL 接在后面）
+# 可用环境变量 NG_MIRROR 覆盖，例如: export NG_MIRROR=https://ghproxy.net/
+DEFAULT_MIRRORS=(
+  "https://ghproxy.net/"
+  "https://mirror.ghproxy.com/"
+  "https://ghfast.top/"
+  "https://gh.ddlc.top/"
+  "https://gitclone.com/"
+)
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -44,6 +55,135 @@ need_root() {
 }
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+normalize_mirror() {
+  local m="${1:-}"
+  m="${m#"${m%%[![:space:]]*}"}"
+  m="${m%"${m##*[![:space:]]}"}"
+  [[ -z "$m" || "$m" == "official" || "$m" == "direct" || "$m" == "0" ]] && { echo ""; return; }
+  [[ "$m" != http://* && "$m" != https://* ]] && m="https://${m}"
+  m="${m%/}/"
+  # gitclone 特殊路径
+  if [[ "$m" == *gitclone.com/ ]]; then
+    m="https://gitclone.com/"
+  fi
+  echo "$m"
+}
+
+saved_mirror() {
+  if [[ -n "${NG_MIRROR:-}" ]]; then
+    normalize_mirror "$NG_MIRROR"
+    return
+  fi
+  if [[ -f "$MIRROR_FILE" ]]; then
+    normalize_mirror "$(cat "$MIRROR_FILE" 2>/dev/null || true)"
+    return
+  fi
+  echo ""
+}
+
+# 构建候选下载地址：优先官方，再首选镜像，再其它默认镜像
+build_url_candidates() {
+  local origin="$1"
+  local preferred
+  preferred="$(saved_mirror)"
+  local -a out=()
+  local m
+
+  # 若用户设置了镜像，优先镜像再官方；否则官方优先
+  if [[ -n "$preferred" ]]; then
+    out+=("${preferred}${origin}")
+    out+=("$origin")
+  else
+    out+=("$origin")
+  fi
+
+  for m in "${DEFAULT_MIRRORS[@]}"; do
+    m="$(normalize_mirror "$m")"
+    [[ -z "$m" ]] && continue
+    [[ -n "$preferred" && "$m" == "$preferred" ]] && continue
+    # gitclone: https://gitclone.com/github.com/...
+    if [[ "$m" == "https://gitclone.com/" ]]; then
+      if [[ "$origin" == https://github.com/* ]]; then
+        out+=("https://gitclone.com/${origin#https://}")
+      elif [[ "$origin" == https://raw.githubusercontent.com/* ]]; then
+        out+=("https://gitclone.com/${origin#https://}")
+      else
+        # API 等走通用前缀镜像
+        out+=("https://ghproxy.net/${origin}")
+      fi
+    else
+      out+=("${m}${origin}")
+    fi
+  done
+
+  # 去重保持顺序
+  local -A seen=()
+  local u
+  for u in "${out[@]}"; do
+    [[ -z "$u" ]] && continue
+    [[ -n "${seen[$u]:-}" ]] && continue
+    seen[$u]=1
+    echo "$u"
+  done
+}
+
+curl_try() {
+  # curl_try URL DEST [extra curl args...]
+  local url="$1"
+  local dest="$2"
+  shift 2
+  curl -fL --connect-timeout 15 --max-time 600 --retry 0 --progress-bar -o "$dest" "$@" "$url"
+}
+
+# 任意原始 URL 下载，官方失败则自动切镜像重试
+download_url_failover() {
+  local origin="$1"
+  local dest="$2"
+  shift 2 || true
+  local tmp cand ok=0
+  tmp="${dest}.ngdl.$$"
+  rm -f "$tmp"
+
+  log "下载: ${origin}"
+  while IFS= read -r cand; do
+    [[ -z "$cand" ]] && continue
+    if [[ "$cand" == "$origin" ]]; then
+      log "尝试官方源..."
+    else
+      warn "官方/前序失败，切换镜像: ${cand}"
+    fi
+    if curl_try "$cand" "$tmp"; then
+      if [[ -s "$tmp" ]]; then
+        mv -f "$tmp" "$dest"
+        ok=1
+        log "下载成功"
+        break
+      fi
+    fi
+    rm -f "$tmp"
+  done < <(build_url_candidates "$origin")
+
+  ((ok)) || die "所有源均下载失败: ${origin}
+可设置镜像后重试: sudo ng mirror
+或: export NG_MIRROR=https://ghproxy.net/"
+}
+
+# GET 文本（API/HTML），带镜像故障转移；成功则打印到 stdout
+curl_text_failover() {
+  local origin="$1"
+  local cand body
+  while IFS= read -r cand; do
+    [[ -z "$cand" ]] && continue
+    if body="$(curl -fsSL --connect-timeout 12 --max-time 60 --retry 0 "$cand" 2>/dev/null)"; then
+      if [[ -n "$body" ]]; then
+        printf '%s' "$body"
+        return 0
+      fi
+    fi
+  done < <(build_url_candidates "$origin")
+  return 1
+}
 
 detect_arch() {
   local m
@@ -85,31 +225,134 @@ fix_ownership() {
 }
 
 latest_tag() {
-  curl -fsSL "${GITHUB_API}/releases/latest" \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | head -n1
+  local json tag loc
+  # 1) GitHub API（含镜像故障转移）
+  if json="$(curl_text_failover "${GITHUB_API}/releases/latest" 2>/dev/null)"; then
+    tag="$(printf '%s' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+    if [[ -n "$tag" ]]; then
+      echo "$tag"
+      return 0
+    fi
+  fi
+  # 2) releases/latest 重定向解析 tag
+  while IFS= read -r cand; do
+    [[ -z "$cand" ]] && continue
+    loc="$(curl -fsSI --connect-timeout 12 --max-time 30 -o /dev/null -w '%{url_effective}' "$cand" 2>/dev/null || true)"
+    if [[ "$loc" =~ /tag/([^/[:space:]]+) ]]; then
+      echo "${BASH_REMATCH[1]}"
+      return 0
+    fi
+    loc="$(curl -fsSI --connect-timeout 12 --max-time 30 "$cand" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="location:"{print $2; exit}')"
+    if [[ "$loc" =~ /tag/([^/[:space:]]+) ]]; then
+      echo "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done < <(build_url_candidates "https://github.com/${REPO}/releases/latest")
+  return 1
 }
 
-asset_url() {
-  # $1 = asset name substring, e.g. nexusgate-server-linux-amd64
-  local want="$1"
-  local json
-  json="$(curl -fsSL "${GITHUB_API}/releases/latest")"
-  # Prefer browser_download_url matching exact asset name
-  echo "$json" | tr ',' '\n' | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | grep -F "/${want}" | head -n1
+release_asset_origin_url() {
+  local tag="$1"
+  local asset="$2"
+  echo "https://github.com/${REPO}/releases/download/${tag}/${asset}"
 }
 
 download_asset() {
   local asset="$1"
   local dest="$2"
-  local url
-  url="$(asset_url "$asset")"
-  [[ -n "$url" ]] || die "GitHub Release 中未找到资产: ${asset}
-请先到 https://github.com/${REPO}/releases 发布包含 Linux 二进制的 Release。"
-  log "下载 ${asset} ..."
-  curl -fL --progress-bar -o "$dest" "$url"
+  local tag url
+  tag="$(latest_tag)" || die "无法获取最新 Release 版本（官方与镜像均失败）
+可执行: sudo ng mirror 设置镜像源后重试"
+  [[ -n "$tag" ]] || die "最新版本号为空"
+  url="$(release_asset_origin_url "$tag" "$asset")"
+  log "目标版本: ${tag}  资产: ${asset}"
+  download_url_failover "$url" "$dest"
   chmod 755 "$dest"
+}
+
+cmd_mirror() {
+  ensure_dirs
+  local cur
+  cur="$(saved_mirror)"
+  echo -e "${BOLD}GitHub 镜像源设置${NC}"
+  echo
+  if [[ -n "${NG_MIRROR:-}" ]]; then
+    echo -e "当前生效: ${CYAN}${NG_MIRROR}${NC}  (环境变量 NG_MIRROR，优先于本地配置)"
+  elif [[ -n "$cur" ]]; then
+    echo -e "当前生效: ${CYAN}${cur}${NC}  (已保存到 ${MIRROR_FILE})"
+  else
+    echo -e "当前生效: ${CYAN}官方优先，失败自动切换默认镜像${NC}"
+  fi
+  echo
+  echo "说明: 安装/更新时先走优先源，失败后自动按列表故障转移重试。"
+  echo
+  echo "  0) 官方优先（失败自动故障转移到镜像）  [推荐]"
+  local i=1 m
+  for m in "${DEFAULT_MIRRORS[@]}"; do
+    echo "  ${i}) 优先使用 ${m}"
+    i=$((i + 1))
+  done
+  echo "  ${i}) 自定义镜像前缀"
+  echo "  c) 清除已保存镜像"
+  echo
+  echo -n "请选择: "
+  local choice custom idx
+  read -r choice
+  case "$choice" in
+    0|"")
+      need_root "mirror"
+      rm -f "$MIRROR_FILE"
+      log "已设为官方优先 + 镜像故障转移"
+      ;;
+    c|C)
+      need_root "mirror"
+      rm -f "$MIRROR_FILE"
+      log "已清除本地镜像配置"
+      ;;
+    [1-9]|[1-9][0-9])
+      idx=$((choice))
+      if (( idx >= 1 && idx <= ${#DEFAULT_MIRRORS[@]} )); then
+        need_root "mirror"
+        normalize_mirror "${DEFAULT_MIRRORS[$((idx - 1))]}" >"$MIRROR_FILE"
+        chmod 644 "$MIRROR_FILE" 2>/dev/null || true
+        log "已保存优先镜像: $(cat "$MIRROR_FILE")"
+      elif (( idx == ${#DEFAULT_MIRRORS[@]} + 1 )); then
+        echo -n "输入镜像前缀 (如 https://ghproxy.net/ ): "
+        read -r custom
+        need_root "mirror"
+        normalize_mirror "$custom" >"$MIRROR_FILE"
+        chmod 644 "$MIRROR_FILE" 2>/dev/null || true
+        [[ -n "$(cat "$MIRROR_FILE")" ]] || die "镜像前缀无效"
+        log "已保存优先镜像: $(cat "$MIRROR_FILE")"
+      else
+        die "无效选项"
+      fi
+      ;;
+    *)
+      die "无效选项"
+      ;;
+  esac
+  echo
+  log "也可临时指定: NG_MIRROR=https://ghproxy.net/ sudo -E ng update-server"
+}
+
+cmd_test_mirror() {
+  ensure_tools
+  local tag origin
+  log "测试获取最新版本号..."
+  if tag="$(latest_tag)"; then
+    log "OK 最新版本: ${tag}"
+  else
+    die "获取版本失败"
+  fi
+  origin="$(release_asset_origin_url "$tag" "nexusgate-server-linux-$(detect_arch)")"
+  log "将按故障转移顺序探测（不完整下载）:"
+  local cand code
+  while IFS= read -r cand; do
+    [[ -z "$cand" ]] && continue
+    code="$(curl -o /dev/null -sS -L --connect-timeout 10 --max-time 20 -w '%{http_code}' "$cand" || echo 000)"
+    echo "  HTTP ${code}  ${cand}"
+  done < <(build_url_candidates "$origin")
 }
 
 write_server_unit() {
@@ -492,6 +735,15 @@ cmd_uninstall_all() {
 cmd_status() {
   echo -e "${BOLD}NexusGate 状态${NC}"
   echo "安装目录: ${PREFIX}"
+  local mir
+  mir="$(saved_mirror)"
+  if [[ -n "${NG_MIRROR:-}" ]]; then
+    echo "下载镜像: ${NG_MIRROR} (NG_MIRROR)"
+  elif [[ -n "$mir" ]]; then
+    echo "下载镜像: ${mir}"
+  else
+    echo "下载镜像: 官方优先 + 自动故障转移"
+  fi
   if [[ -f "$VERSION_FILE" ]]; then
     echo "本地版本: $(cat "$VERSION_FILE")"
   else
@@ -533,15 +785,14 @@ cmd_logs() {
 
 cmd_self_update() {
   need_root "self-update"
+  ensure_dirs
   local tmp
   tmp="$(mktemp)"
-  curl -fsSL "${GITHUB_RAW}/scripts/ng" -o "$tmp"
+  download_url_failover "${GITHUB_RAW}/scripts/ng" "$tmp"
   chmod 755 "$tmp"
-  # basic sanity
   grep -q 'NexusGate Linux manager' "$tmp" || die "下载的脚本校验失败"
   install -m 755 "$tmp" "$NG_LINK"
   rm -f "$tmp"
-  # also keep a copy under prefix if present
   if [[ -d "$PREFIX" ]]; then
     mkdir -p "${PREFIX}/scripts"
     cp -f "$NG_LINK" "${PREFIX}/scripts/ng"
@@ -581,12 +832,16 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
   config-client           编辑客户端配置并可选重启
 
 其它:
+  mirror                  设置 GitHub 镜像源（下载故障转移）
+  test-mirror             探测官方/镜像可用性
   self-update             更新本管理脚本 ng
   help                    显示帮助
   menu                    交互菜单（默认）
 
 示例:
   sudo ng
+  sudo ng mirror
+  NG_MIRROR=https://ghproxy.net/ sudo -E ng install-server
   sudo ng install-server
   sudo ng config-client
   sudo ng restart server
@@ -648,6 +903,15 @@ menu() {
     if [[ -f "$VERSION_FILE" ]]; then
       echo -e "  本地版本: $(cat "$VERSION_FILE")"
     fi
+    local _m
+    _m="$(saved_mirror 2>/dev/null || true)"
+    if [[ -n "${NG_MIRROR:-}" ]]; then
+      echo -e "  下载镜像: ${CYAN}${NG_MIRROR}${NC} (环境变量)"
+    elif [[ -n "${_m}" ]]; then
+      echo -e "  下载镜像: ${CYAN}${_m}${NC}"
+    else
+      echo -e "  下载镜像: 官方优先 + 自动故障转移"
+    fi
     echo
     echo "  -------- 安装 / 更新 --------"
     echo "   1) 安装服务端"
@@ -674,6 +938,8 @@ menu() {
     echo "  -------- 其它 --------"
     echo "  15) 更新本管理脚本 ng"
     echo "  16) 显示命令帮助"
+    echo "  17) 设置 GitHub 镜像源"
+    echo "  18) 测试镜像/官方下载"
     echo "   0) 退出"
     echo
     echo -n "请输入数字选择功能: "
@@ -751,6 +1017,14 @@ menu() {
         print_help
         pause
         ;;
+      17)
+        cmd_mirror
+        pause
+        ;;
+      18)
+        cmd_test_mirror
+        pause
+        ;;
       0|q|Q)
         echo "已退出。"
         exit 0
@@ -788,6 +1062,8 @@ main() {
     status|st) cmd_status "$@" ;;
     logs|log)  cmd_logs "$@" ;;
     self-update) cmd_self_update "$@" ;;
+    mirror|mirrors) cmd_mirror "$@" ;;
+    test-mirror|tm) cmd_test_mirror "$@" ;;
     menu|m) menu ;;
     help|-h|--help) print_help ;;
     *)
