@@ -133,7 +133,13 @@ curl_try() {
   local url="$1"
   local dest="$2"
   shift 2
-  curl -fL --connect-timeout 15 --max-time 600 --retry 0 --progress-bar -o "$dest" "$@" "$url"
+  if have_cmd curl; then
+    curl -fL --connect-timeout 15 --max-time 600 --retry 0 --progress-bar -o "$dest" "$@" "$url"
+  elif have_cmd wget; then
+    wget -q --timeout=30 --tries=2 -O "$dest" "$url"
+  else
+    return 1
+  fi
 }
 
 # 任意原始 URL 下载，官方失败则自动切镜像重试
@@ -175,11 +181,15 @@ curl_text_failover() {
   local cand body
   while IFS= read -r cand; do
     [[ -z "$cand" ]] && continue
-    if body="$(curl -fsSL --connect-timeout 12 --max-time 60 --retry 0 "$cand" 2>/dev/null)"; then
-      if [[ -n "$body" ]]; then
-        printf '%s' "$body"
-        return 0
-      fi
+    body=""
+    if have_cmd curl; then
+      body="$(curl -fsSL --connect-timeout 12 --max-time 60 --retry 0 "$cand" 2>/dev/null)" || true
+    elif have_cmd wget; then
+      body="$(wget -q --timeout=20 --tries=2 -O - "$cand" 2>/dev/null)" || true
+    fi
+    if [[ -n "$body" ]]; then
+      printf '%s' "$body"
+      return 0
     fi
   done < <(build_url_candidates "$origin")
   return 1
@@ -195,13 +205,34 @@ detect_arch() {
   esac
 }
 
-ensure_tools() {
-  local miss=()
-  have_cmd curl || miss+=(curl)
-  have_cmd systemctl || miss+=(systemd)
-  if ((${#miss[@]})); then
-    die "缺少依赖: ${miss[*]}"
+try_install_pkg() {
+  local pkg="$1"
+  if have_cmd apt-get; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null 2>&1
+  elif have_cmd dnf; then
+    dnf install -y -q "$pkg" >/dev/null 2>&1
+  elif have_cmd yum; then
+    yum install -y -q "$pkg" >/dev/null 2>&1
+  elif have_cmd apk; then
+    apk add --quiet "$pkg" >/dev/null 2>&1
+  else
+    return 1
   fi
+}
+
+ensure_tools() {
+  if ! have_cmd curl; then
+    warn "未检测到 curl，尝试自动安装..."
+    if try_install_pkg curl && have_cmd curl; then
+      log "已安装 curl"
+    elif have_cmd wget; then
+      warn "将使用 wget 作为下载后备"
+    else
+      die "缺少 curl（也无 wget）。请先安装: apt-get install -y curl"
+    fi
+  fi
+  have_cmd systemctl || die "缺少 systemd（systemctl）"
 }
 
 ensure_dirs() {
@@ -220,8 +251,10 @@ ensure_user() {
 fix_ownership() {
   chown -R "${SYSUSER}:${SYSUSER}" "$PREFIX"
   chmod 755 "$BIN_DIR" 2>/dev/null || true
-  [[ -f "$SERVER_BIN" ]] && chmod 755 "$SERVER_BIN"
-  [[ -f "$EDGE_BIN" ]] && chmod 755 "$EDGE_BIN"
+  # 注意: 在 set -e 下，函数末尾的 `[[ ]] && cmd` 若条件为假会让函数返回 1，导致安装中断
+  if [[ -f "$SERVER_BIN" ]]; then chmod 755 "$SERVER_BIN"; fi
+  if [[ -f "$EDGE_BIN" ]]; then chmod 755 "$EDGE_BIN"; fi
+  return 0
 }
 
 latest_tag() {
@@ -476,7 +509,9 @@ cmd_install_server() {
   fix_ownership
   echo "$tag" >"$VERSION_FILE"
   systemctl daemon-reload
-  systemctl enable --now "$SERVER_UNIT"
+  systemctl enable "$SERVER_UNIT"
+  systemctl restart "$SERVER_UNIT" || systemctl start "$SERVER_UNIT"
+  systemctl is-active --quiet "$SERVER_UNIT" || die "服务端启动失败，请查看: journalctl -u ${SERVER_UNIT} -xe"
   log "服务端已安装并开机自启（版本 ${tag}）"
   log "API: http://0.0.0.0:3000  Gateway: :8080  Control: :7000  Data: :7001"
   log "默认账号 admin / admin123 ，请尽快修改配置"
@@ -504,8 +539,12 @@ cmd_install_client() {
   fix_ownership
   echo "$tag" >"$VERSION_FILE"
   systemctl daemon-reload
-  systemctl enable --now "$EDGE_UNIT"
+  systemctl enable "$EDGE_UNIT"
+  systemctl restart "$EDGE_UNIT" || systemctl start "$EDGE_UNIT"
   log "客户端已安装并开机自启（版本 ${tag}）"
+  if ! systemctl is-active --quiet "$EDGE_UNIT"; then
+    warn "客户端未能立即启动（常见原因：未配置 token）。请: sudo ng config-client && sudo ng start client"
+  fi
 }
 
 cmd_update_server() {
@@ -828,6 +867,7 @@ cmd_self_update() {
   local tmp
   tmp="$(mktemp)"
   download_url_failover "${GITHUB_RAW}/scripts/ng" "$tmp"
+  sed -i 's/\r$//' "$tmp" 2>/dev/null || true
   chmod 755 "$tmp"
   grep -q 'NexusGate Linux manager' "$tmp" || die "下载的脚本校验失败"
   install -m 755 "$tmp" "$NG_LINK"

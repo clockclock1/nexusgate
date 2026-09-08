@@ -62,17 +62,41 @@ download_failover() {
     if [[ "$cand" != "$origin" ]]; then
       echo "[install-ng] 切换镜像重试: ${cand}"
     fi
-    if curl -fsSL --connect-timeout 15 --max-time 120 --retry 0 -o "$dest" "$cand"; then
-      if [[ -s "$dest" ]]; then
-        echo "[install-ng] 下载成功"
-        return 0
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsSL --connect-timeout 15 --max-time 120 --retry 0 -o "$dest" "$cand"; then
+        if [[ -s "$dest" ]]; then
+          echo "[install-ng] 下载成功"
+          return 0
+        fi
       fi
+    elif command -v wget >/dev/null 2>&1; then
+      if wget -q --timeout=20 --tries=2 -O "$dest" "$cand"; then
+        if [[ -s "$dest" ]]; then
+          echo "[install-ng] 下载成功"
+          return 0
+        fi
+      fi
+    else
+      echo "[install-ng] 缺少 curl/wget" >&2
+      return 1
     fi
     rm -f "$dest"
   done < <(build_candidates "$origin")
   echo "[install-ng] 所有源下载失败。可设置: NG_MIRROR=https://ghproxy.net/" >&2
   return 1
 }
+
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "[install-ng] 安装 curl..."
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl >/dev/null 2>&1 || true
+  fi
+fi
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+  echo "[install-ng] 需要 curl 或 wget" >&2
+  exit 1
+fi
 
 tmp="$(mktemp)"
 cleanup() { rm -f "$tmp"; }
@@ -89,6 +113,9 @@ grep -q 'NexusGate Linux manager' "$tmp" || {
   echo "[install-ng] 脚本内容校验失败" >&2
   exit 1
 }
+
+# 去掉可能的 CRLF，避免 bash 报 $'\r' 错误
+sed -i 's/\r$//' "$tmp" 2>/dev/null || true
 
 install -m 755 "$tmp" "$DEST"
 
