@@ -18,9 +18,9 @@ CLIENT_CFG_DIR="${PREFIX}/client/config"
 SERVER_CFG="${SERVER_CFG_DIR}/server.toml"
 CLIENT_CFG="${CLIENT_CFG_DIR}/edge.toml"
 WEB_DIR="${PREFIX}/web"
-WEB_DIST="${WEB_DIR}/dist"
-WEB_ENV="${WEB_DIR}/web.env"
-WEB_NGINX_CONF="${WEB_DIR}/nginx.conf"
+WEB_CFG_DIR="${WEB_DIR}/config"
+WEB_CFG="${WEB_CFG_DIR}/admin.toml"
+WEB_BIN="${BIN_DIR}/p2p-admin"
 DATA_DIR="${PREFIX}/data"
 STATE_DIR="${PREFIX}/.state"
 VERSION_FILE="${STATE_DIR}/version"
@@ -244,21 +244,11 @@ ensure_tools() {
 
 ensure_web_tools() {
   ensure_tools
-  if ! have_cmd unzip; then
-    warn "未检测到 unzip，尝试自动安装..."
-    try_install_pkg unzip || true
-    have_cmd unzip || die "缺少 unzip，请先安装: apt-get install -y unzip"
-  fi
-  if ! have_cmd nginx; then
-    warn "未检测到 nginx，尝试自动安装（管理面板需要）..."
-    try_install_pkg nginx || true
-    have_cmd nginx || die "缺少 nginx，请先安装: apt-get install -y nginx"
-  fi
 }
 
 ensure_dirs() {
   mkdir -p "$BIN_DIR" "$SERVER_CFG_DIR" "$CLIENT_CFG_DIR" "$DATA_DIR" "$STATE_DIR"
-  mkdir -p "$WEB_DIR" "$WEB_DIST" "${WEB_DIR}/logs" "${WEB_DIR}/tmp"
+  mkdir -p "$WEB_DIR" "$WEB_CFG_DIR"
 }
 
 ensure_user() {
@@ -276,6 +266,7 @@ fix_ownership() {
   # 注意: 在 set -e 下，函数末尾的 `[[ ]] && cmd` 若条件为假会让函数返回 1，导致安装中断
   if [[ -f "$SERVER_BIN" ]]; then chmod 755 "$SERVER_BIN"; fi
   if [[ -f "$EDGE_BIN" ]]; then chmod 755 "$EDGE_BIN"; fi
+  if [[ -f "$WEB_BIN" ]]; then chmod 755 "$WEB_BIN"; fi
   return 0
 }
 
@@ -459,110 +450,35 @@ WantedBy=multi-user.target
 EOF
 }
 
-web_env_get() {
-  local key="$1" def="${2:-}"
-  if [[ -f "$WEB_ENV" ]]; then
-    local line
-    line="$(grep -E "^[[:space:]]*${key}=" "$WEB_ENV" 2>/dev/null | head -n1 || true)"
-    if [[ -n "$line" ]]; then
-      printf '%s' "${line#*=}"
-      return 0
-    fi
-  fi
-  printf '%s' "$def"
-}
-
-write_web_env_file() {
-  local listen_port="$1" api_upstream="$2"
-  cat >"$WEB_ENV" <<EOF
-# NexusGate Web panel settings (managed by ng)
-listen_port=${listen_port}
-api_upstream=${api_upstream}
-EOF
-}
-
-write_web_nginx_conf() {
-  local listen_port api_upstream mime_line
-  listen_port="$(web_env_get listen_port "$DEFAULT_WEB_PORT")"
-  api_upstream="$(web_env_get api_upstream "$DEFAULT_API_UPSTREAM")"
-  mkdir -p "${WEB_DIR}/logs" "${WEB_DIR}/tmp/client_body" "${WEB_DIR}/tmp/proxy" \
-    "${WEB_DIR}/tmp/fastcgi" "${WEB_DIR}/tmp/uwsgi" "${WEB_DIR}/tmp/scgi"
-  if [[ -f /etc/nginx/mime.types ]]; then
-    mime_line="include /etc/nginx/mime.types;"
-  else
-    mime_line="types { text/html html htm; text/css css; application/javascript js; application/json json; image/png png; image/jpeg jpg jpeg; image/svg+xml svg; font/woff2 woff2; }"
-  fi
-  cat >"$WEB_NGINX_CONF" <<EOF
-worker_processes auto;
-error_log ${WEB_DIR}/logs/error.log warn;
-pid ${WEB_DIR}/nginx.pid;
-
-events {
-    worker_connections 1024;
-}
-
-http {
-    ${mime_line}
-    default_type application/octet-stream;
-    sendfile on;
-    keepalive_timeout 65;
-    client_body_temp_path ${WEB_DIR}/tmp/client_body;
-    proxy_temp_path ${WEB_DIR}/tmp/proxy;
-    fastcgi_temp_path ${WEB_DIR}/tmp/fastcgi;
-    uwsgi_temp_path ${WEB_DIR}/tmp/uwsgi;
-    scgi_temp_path ${WEB_DIR}/tmp/scgi;
-    access_log ${WEB_DIR}/logs/access.log;
-
-    server {
-        listen ${listen_port};
-        server_name _;
-        root ${WEB_DIST};
-        index index.html;
-
-        location /api/ {
-            proxy_pass http://${api_upstream};
-            proxy_http_version 1.1;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-        }
-
-        location /ws/ {
-            proxy_pass http://${api_upstream};
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_read_timeout 3600s;
-        }
-
-        location / {
-            try_files \$uri \$uri/ /index.html;
-        }
-    }
-}
+write_web_config_file() {
+  local listen="$1" listen_port="$2" api_upstream="$3"
+  mkdir -p "$WEB_CFG_DIR"
+  cat >"$WEB_CFG" <<EOF
+listen = "${listen}"
+listen_port = ${listen_port}
+api_upstream = "${api_upstream}"
 EOF
 }
 
 write_web_unit() {
-  local nginx_bin
-  nginx_bin="$(command -v nginx)"
   cat >"/etc/systemd/system/${WEB_UNIT}" <<EOF
 [Unit]
-Description=NexusGate Web Admin Panel (nginx)
+Description=NexusGate Web Admin Panel (embedded SPA + API proxy)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+User=${SYSUSER}
+Group=${SYSUSER}
 WorkingDirectory=${WEB_DIR}
-ExecStart=${nginx_bin} -g "daemon off;" -c ${WEB_NGINX_CONF}
-ExecReload=${nginx_bin} -s reload -c ${WEB_NGINX_CONF}
+ExecStart=${WEB_BIN} --config ${WEB_CFG}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
+Environment=RUST_LOG=info
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -573,53 +489,40 @@ configure_web_interactive() {
   ensure_dirs
   echo
   echo -e "${BOLD}======== 管理面板配置向导 ========${NC}"
-  echo "  静态资源目录: ${WEB_DIST}"
-  echo "  Nginx 将反代 /api/ 与 /ws/ 到服务端 API"
+  echo "  二进制: ${WEB_BIN}（内嵌前端，反代 /api 与 /ws）"
+  echo "  配置文件: ${WEB_CFG}"
   echo
 
-  local listen_port api_upstream def_api
+  local listen listen_port api_upstream def_api
   def_api="$DEFAULT_API_UPSTREAM"
   if [[ -f "$SERVER_CFG" ]]; then
     local ap
     ap="$(toml_get "$SERVER_CFG" api_port 3000)"
     def_api="127.0.0.1:${ap}"
   fi
-  def_api="$(web_env_get api_upstream "$def_api")"
-  listen_port="$(ask_input "面板监听端口 listen_port" "$(web_env_get listen_port "$DEFAULT_WEB_PORT")" 1)"
-  api_upstream="$(ask_input "API 反代地址 api_upstream (host:port)" "$def_api" 1)"
+  listen="$(ask_input "监听地址 listen" "$(toml_get "$WEB_CFG" listen "0.0.0.0")" 1)"
+  listen_port="$(ask_input "面板端口 listen_port" "$(toml_get "$WEB_CFG" listen_port "$DEFAULT_WEB_PORT")" 1)"
+  api_upstream="$(ask_input "API 反代地址 api_upstream (host:port)" "$(toml_get "$WEB_CFG" api_upstream "$def_api")" 1)"
 
-  write_web_env_file "$listen_port" "$api_upstream"
-  write_web_nginx_conf
+  write_web_config_file "$listen" "$listen_port" "$api_upstream"
   echo
-  log "管理面板配置已保存: ${WEB_ENV}"
-  echo -e "  访问地址: http://0.0.0.0:${listen_port}"
+  log "管理面板配置已保存: ${WEB_CFG}"
+  echo -e "  访问地址: http://${listen}:${listen_port}"
   echo -e "  API 上游: ${api_upstream}"
 }
 
-install_web_dist_from_release() {
-  local tag zip tmpdir idx src
+install_web_bin_from_release() {
+  local arch tag asset
+  arch="$(detect_arch)"
   tag="$(latest_tag)"
   [[ -n "$tag" ]] || die "无法获取最新 Release 版本"
+  asset="nexusgate-admin-linux-${arch}"
   ensure_dirs
-  zip="${WEB_DIR}/nexusgate-web.zip"
-  log "下载管理面板静态包 nexusgate-web.zip (${tag})..."
-  download_url_failover "$(release_asset_origin_url "$tag" "nexusgate-web.zip")" "$zip"
-  tmpdir="${WEB_DIR}/.extract.$$"
-  rm -rf "$tmpdir"
-  mkdir -p "$tmpdir"
-  unzip -o -q "$zip" -d "$tmpdir"
-  idx="$(find "$tmpdir" -type f -name index.html | head -n1 || true)"
-  [[ -n "$idx" ]] || die "nexusgate-web.zip 中未找到 index.html"
-  src="$(dirname "$idx")"
-  rm -rf "${WEB_DIST}.new"
-  mkdir -p "${WEB_DIST}.new"
-  cp -a "${src}/." "${WEB_DIST}.new/"
-  rm -rf "$WEB_DIST"
-  mv "${WEB_DIST}.new" "$WEB_DIST"
-  rm -rf "$tmpdir"
+  log "下载管理面板二进制 ${asset} (${tag})..."
+  download_asset "$asset" "$WEB_BIN"
   echo "$tag" >"${WEB_DIR}/version"
   echo "$tag" >"$VERSION_FILE"
-  log "管理面板静态资源已安装到 ${WEB_DIST}"
+  log "管理面板二进制已安装: ${WEB_BIN}"
 }
 
 # ---------- 交互式配置（逐项提问，不直接打开编辑器）----------
@@ -857,7 +760,7 @@ svc_do() {
 
 installed_server() { [[ -x "$SERVER_BIN" ]] && unit_exists "$SERVER_UNIT"; }
 installed_client() { [[ -x "$EDGE_BIN" ]] && unit_exists "$EDGE_UNIT"; }
-installed_web() { [[ -f "${WEB_DIST}/index.html" ]] && unit_exists "$WEB_UNIT"; }
+installed_web() { [[ -x "$WEB_BIN" ]] && unit_exists "$WEB_UNIT"; }
 
 cmd_install_server() {
   need_root "install-server"
@@ -941,30 +844,28 @@ cmd_install_web() {
   ensure_web_tools
   ensure_dirs
   ensure_user
-  install_web_dist_from_release
+  install_web_bin_from_release
 
   echo
-  log "静态资源已就绪，开始逐项配置管理面板..."
+  log "二进制已就绪，开始逐项配置管理面板..."
   configure_web_interactive
 
   write_web_unit
   fix_ownership
   systemctl daemon-reload
 
-  # 避免与系统默认 nginx 抢占冲突：若系统 nginx 在跑且同端口，仅作提示
   local wp
-  wp="$(web_env_get listen_port "$DEFAULT_WEB_PORT")"
+  wp="$(toml_get "$WEB_CFG" listen_port "$DEFAULT_WEB_PORT")"
 
   echo
   if ask_yn "写入 systemd 并启用开机自启，立即启动管理面板?" "Y"; then
-    # 若系统 nginx 占用同端口，尝试不冲突：本单元使用独立 -c 配置
     systemctl enable "$WEB_UNIT"
     systemctl restart "$WEB_UNIT" || systemctl start "$WEB_UNIT"
     if systemctl is-active --quiet "$WEB_UNIT"; then
-      log "管理面板已安装并开机自启"
+      log "管理面板已安装并开机自启（内嵌前端 + API 反代）"
       log "浏览器访问: http://<服务器IP>:${wp}  （默认账号见服务端配置）"
     else
-      die "管理面板启动失败，请查看: journalctl -u ${WEB_UNIT} -xe  以及 ${WEB_DIR}/logs/error.log"
+      die "管理面板启动失败，请查看: journalctl -u ${WEB_UNIT} -xe"
     fi
   else
     systemctl enable "$WEB_UNIT" || true
@@ -978,8 +879,7 @@ cmd_update_web() {
   ensure_web_tools
   local running=0
   if systemctl is-active --quiet "$WEB_UNIT"; then running=1; systemctl stop "$WEB_UNIT"; fi
-  install_web_dist_from_release
-  write_web_nginx_conf
+  install_web_bin_from_release
   fix_ownership
   systemctl daemon-reload
   if ((running)); then
@@ -1095,18 +995,12 @@ cmd_restart() {
       ;;
     web)
       installed_web || die "管理面板未安装"
-      write_web_nginx_conf
       svc_do restart "$WEB_UNIT"
       ;;
     all)
       installed_server && svc_do restart "$SERVER_UNIT" || warn "跳过服务端"
       installed_client && svc_do restart "$EDGE_UNIT" || warn "跳过客户端"
-      if installed_web; then
-        write_web_nginx_conf
-        svc_do restart "$WEB_UNIT"
-      else
-        warn "跳过管理面板"
-      fi
+      installed_web && svc_do restart "$WEB_UNIT" || warn "跳过管理面板"
       ;;
   esac
   log "已重启: $t"
@@ -1178,13 +1072,14 @@ purge_client_files() {
 
 purge_web_files() {
   unit_exists "$WEB_UNIT" && systemctl disable --now "$WEB_UNIT" 2>/dev/null || true
+  rm -f "$WEB_BIN" "${WEB_BIN}.new"
   rm -rf "$WEB_DIR"
   rm -f "/etc/systemd/system/${WEB_UNIT}"
   rm -f "/etc/systemd/system/multi-user.target.wants/${WEB_UNIT}"
 }
 
 any_component_installed() {
-  [[ -x "$SERVER_BIN" || -x "$EDGE_BIN" || -f "${WEB_DIST}/index.html" ]]
+  [[ -x "$SERVER_BIN" || -x "$EDGE_BIN" || -x "$WEB_BIN" ]]
 }
 
 maybe_purge_all() {
@@ -1227,7 +1122,7 @@ cmd_uninstall_client() {
 
 cmd_uninstall_web() {
   need_root "uninstall-web"
-  warn "将完全卸载管理面板：静态资源、nginx 单元与配置"
+  warn "将完全卸载管理面板：二进制、systemd 与配置"
   read -r -p "确认卸载管理面板? 输入 yes 继续: " ans
   [[ "$ans" == "yes" ]] || die "已取消"
   purge_web_files
@@ -1340,10 +1235,9 @@ cmd_status() {
   echo
   if installed_web || unit_exists "$WEB_UNIT"; then
     echo -e "${CYAN}管理面板${NC}: $(systemctl is-active "$WEB_UNIT" 2>/dev/null || echo unknown) / $(systemctl is-enabled "$WEB_UNIT" 2>/dev/null || echo unknown)"
-    echo "  静态目录: $WEB_DIST"
-    echo "  配置:     $WEB_ENV"
-    echo "  Nginx:    $WEB_NGINX_CONF"
-    echo "  访问:     http://0.0.0.0:$(web_env_get listen_port "$DEFAULT_WEB_PORT")"
+    echo "  二进制: $WEB_BIN"
+    echo "  配置:   $WEB_CFG"
+    echo "  访问:   http://0.0.0.0:$(toml_get "$WEB_CFG" listen_port "$DEFAULT_WEB_PORT")"
   else
     echo -e "${CYAN}管理面板${NC}: 未安装"
   fi
@@ -1385,14 +1279,12 @@ cmd_show_config() {
       print_config_file "客户端" "$CLIENT_CFG"
       ;;
     web)
-      print_config_file "管理面板 web.env" "$WEB_ENV"
-      print_config_file "管理面板 nginx.conf" "$WEB_NGINX_CONF"
+      print_config_file "管理面板" "$WEB_CFG"
       ;;
     all)
       print_config_file "服务端" "$SERVER_CFG"
       print_config_file "客户端" "$CLIENT_CFG"
-      print_config_file "管理面板 web.env" "$WEB_ENV"
-      print_config_file "管理面板 nginx.conf" "$WEB_NGINX_CONF"
+      print_config_file "管理面板" "$WEB_CFG"
       ;;
   esac
 }
@@ -1445,10 +1337,10 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
 安装 / 更新 / 卸载:
   install-server          安装服务端：下载 → 逐项配置 → systemd 自启
   install-client          安装客户端：下载 → 逐项配置 → systemd 自启
-  install-web             安装管理面板：下载 zip → 逐项配置 → nginx 自启
+  install-web             安装管理面板：下载内嵌前端的 p2p-admin → 逐项配置 → 自启
   update-server           更新服务端到 GitHub 最新 Release
   update-client           更新客户端到 GitHub 最新 Release
-  update-web              更新管理面板静态资源到最新 Release
+  update-web              更新管理面板二进制到最新 Release
   uninstall-server        完全卸载服务端（含配置与数据）
   uninstall-client        完全卸载客户端（含配置）
   uninstall-web           完全卸载管理面板
@@ -1593,7 +1485,7 @@ menu() {
     echo "  -------- 安装 / 更新 --------"
     echo "   1) 安装服务端（下载后逐项配置再自启）"
     echo "   2) 安装客户端（下载后逐项配置再自启）"
-    echo "  21) 安装管理面板（下载 zip + nginx 反代）"
+    echo "  21) 安装管理面板（内嵌前端的 Rust 反代）"
     echo "   3) 更新服务端（GitHub 最新）"
     echo "   4) 更新客户端（GitHub 最新）"
     echo "  22) 更新管理面板"

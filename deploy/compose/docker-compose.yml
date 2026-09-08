@@ -16,7 +16,9 @@ services:
   nexusgate-web:
     image: ${NEXUSGATE_WEB_IMAGE:-ghcr.io/clockclock1/nexusgate-web}:${NEXUSGATE_VERSION:-latest}
     ports:
-      - "${NEXUSGATE_WEB_PORT:-8088}:80"
+      - "${NEXUSGATE_WEB_PORT:-8088}:8088"
+    volumes:
+      - ./admin.toml:/opt/nexusgate/web/config/admin.toml:ro
     depends_on:
       - nexusgate-server
     restart: unless-stopped

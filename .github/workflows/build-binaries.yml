@@ -9,8 +9,37 @@ permissions:
   contents: write
 
 jobs:
+  prepare-web:
+    name: prepare-web-dist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
+
+      - name: Upload web dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.name }}
+    needs: prepare-web
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,35 +50,47 @@ jobs:
             target: x86_64-pc-windows-msvc
             server_artifact: nexusgate-server-windows-amd64.exe
             edge_artifact: nexusgate-edge-windows-amd64.exe
+            admin_artifact: nexusgate-admin-windows-amd64.exe
           - name: windows-arm64
             os: windows-latest
             target: aarch64-pc-windows-msvc
             server_artifact: nexusgate-server-windows-arm64.exe
             edge_artifact: nexusgate-edge-windows-arm64.exe
+            admin_artifact: nexusgate-admin-windows-arm64.exe
           - name: linux-amd64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             server_artifact: nexusgate-server-linux-amd64
             edge_artifact: nexusgate-edge-linux-amd64
+            admin_artifact: nexusgate-admin-linux-amd64
           - name: linux-arm64
             os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             server_artifact: nexusgate-server-linux-arm64
             edge_artifact: nexusgate-edge-linux-arm64
+            admin_artifact: nexusgate-admin-linux-arm64
           - name: macos-amd64
             os: macos-latest
             target: x86_64-apple-darwin
             server_artifact: nexusgate-server-macos-amd64
             edge_artifact: nexusgate-edge-macos-amd64
+            admin_artifact: nexusgate-admin-macos-amd64
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
             server_artifact: nexusgate-server-macos-arm64
             edge_artifact: nexusgate-edge-macos-arm64
+            admin_artifact: nexusgate-admin-macos-arm64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download web dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -63,23 +104,27 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Build server and edge
+      - name: Build server, edge and admin
         shell: bash
         run: |
           mkdir -p dist
+          test -f web/dist/index.html
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
-          cargo build --release --locked --target "${{ matrix.target }}" -p p2p-server -p p2p-edge
+          cargo build --release --locked --target "${{ matrix.target }}" -p p2p-server -p p2p-edge -p p2p-admin
 
           server="target/${{ matrix.target }}/release/p2p-server"
           edge="target/${{ matrix.target }}/release/p2p-edge"
+          admin="target/${{ matrix.target }}/release/p2p-admin"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             server="${server}.exe"
             edge="${edge}.exe"
+            admin="${admin}.exe"
           fi
           cp "$server" "dist/${{ matrix.server_artifact }}"
           cp "$edge" "dist/${{ matrix.edge_artifact }}"
+          cp "$admin" "dist/${{ matrix.admin_artifact }}"
 
       - name: Upload executable artifacts
         uses: actions/upload-artifact@v4
@@ -88,6 +133,7 @@ jobs:
           path: |
             dist/${{ matrix.server_artifact }}
             dist/${{ matrix.edge_artifact }}
+            dist/${{ matrix.admin_artifact }}
           if-no-files-found: error
 
       - name: Attach executables to GitHub Release
@@ -97,3 +143,4 @@ jobs:
           files: |
             dist/${{ matrix.server_artifact }}
             dist/${{ matrix.edge_artifact }}
+            dist/${{ matrix.admin_artifact }}

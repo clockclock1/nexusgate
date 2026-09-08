@@ -1,0 +1,6 @@
+# NexusGate Admin Panel
+# listen_port: panel port
+# api_upstream: p2p-server management API host:port
+listen = "0.0.0.0"
+listen_port = 8088
+api_upstream = "127.0.0.1:3000"

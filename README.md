@@ -115,13 +115,19 @@ sudo ng install-web
 
 流程：
 
-1. 下载 Release 中的 `nexusgate-web.zip`
+1. 下载 Release 中的 `nexusgate-admin-linux-amd64|arm64`（**内嵌前端**的 Rust 小服务）
 2. 逐项配置面板端口（默认 `8088`）与 API 反代地址（默认 `127.0.0.1:3000`）
-3. 用独立 nginx 配置启动 `nexusgate-web.service`，反代 `/api/`、`/ws/`
+3. 启动 `nexusgate-web.service`：托管页面并反代 `/api/`、`/ws/` 到服务端
 
 浏览器访问：`http://<服务器IP>:8088`（账号同服务端管理员）。
 
 也可：`sudo ng config-web` / `sudo ng update-web` / `sudo ng uninstall-web`。
+
+本地也可直接运行（需先 `cd web && npm ci && npm run build`）：
+
+```bash
+cargo run -p p2p-admin --release -- --config admin/config/admin.toml
+```
 
 ### 3. 安装并启动客户端（内网机器）
 
@@ -183,16 +189,15 @@ sudo ng self-update        # 更新 ng 脚本自身
 /opt/nexusgate/bin/p2p-edge
 /opt/nexusgate/server/config/server.toml
 /opt/nexusgate/client/config/edge.toml
-/opt/nexusgate/web/dist/
-/opt/nexusgate/web/web.env
-/opt/nexusgate/web/nginx.conf
+/opt/nexusgate/bin/p2p-admin
+/opt/nexusgate/web/config/admin.toml
 /opt/nexusgate/data/
 /etc/systemd/system/nexusgate-server.service
 /etc/systemd/system/nexusgate-edge.service
 /etc/systemd/system/nexusgate-web.service
 ```
 
-> 二进制安装/更新依赖 Release 资产名：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`、`nexusgate-web.zip`。请先在仓库发布 Release（Actions 会自动挂载产物）。
+> 二进制安装/更新依赖 Release 资产名：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`、`nexusgate-admin-linux-*`。请先在仓库发布 Release（Actions 会自动挂载产物）。
 
 ### GitHub 镜像源（国内网络）
 
@@ -298,20 +303,22 @@ sudo ng install-client
 - `nexusgate-server-linux-amd64` / `nexusgate-edge-linux-amd64`
 - `linux-arm64` / `macos-amd64` / `macos-arm64` 等同理
 
-**前端（独立）**
+**前端管理面板（独立二进制，内嵌静态资源）**
 
-- `nexusgate-web.zip`（静态资源，可用 Nginx 托管）
+- `nexusgate-admin-windows-amd64.exe` / `nexusgate-admin-linux-amd64` 等
+- 仅负责：托管 SPA + 反代 `/api`、`/ws` 到服务端 API
 
 ```bash
 ./nexusgate-server-linux-amd64 --config server/config/server.toml
+./nexusgate-admin-linux-amd64 --config admin/config/admin.toml
 ./nexusgate-edge-linux-amd64 --config client/config/edge.toml
 ```
 
 本地自行编译：
 
 ```bash
-cargo build --release --locked -p p2p-server -p p2p-edge
-cd web && npm ci && npm run build
+cd web && npm ci && npm run build && cd ..
+cargo build --release --locked -p p2p-server -p p2p-edge -p p2p-admin
 ```
 
 ### C. Docker（GHCR）
@@ -387,9 +394,9 @@ kubectl apply -f deploy/kubernetes/service.yaml
 
 | Workflow | 作用 |
 |----------|------|
-| `Build Executables` | 多平台编译 Server + Edge，并挂到 Release |
-| `Build Web Frontend` | **单独**构建前端 zip，并挂到 Release |
-| `Docker Image` | 构建并推送 server / edge / web 多架构镜像到 GHCR |
+| `Build Executables` | 多平台编译 Server + Edge + **Admin（内嵌前端）**，并挂到 Release |
+| `Build Web Frontend` | 可选：单独构建前端 zip（兼容旧 Nginx 部署） |
+| `Docker Image` | 构建并推送 server / edge / web（admin）多架构镜像到 GHCR |
 
 ---
 

@@ -12,8 +12,9 @@ members = [
     "shared/metrics",
     "server",
     "client",
+    "admin",
 ]
-default-members = ["server", "client"]
+default-members = ["server", "client", "admin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -26,7 +27,7 @@ repository = "https://github.com/example/p2p-network"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 axum = { version = "0.7", features = ["ws", "macros"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bytes = "1"
@@ -50,6 +51,10 @@ rand = "0.8"
 bcrypt = "0.15"
 async-trait = "0.1"
 base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+http = "1"
+http-body-util = "0.1"
 
 # Internal crates
 p2p-common = { path = "shared/common" }

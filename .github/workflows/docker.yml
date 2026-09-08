@@ -45,6 +45,20 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend for embed
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
+
       - name: Build executables
         shell: bash
         run: |
@@ -52,9 +66,10 @@ jobs:
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
-          cargo build --release --locked --target "${{ matrix.target }}" -p p2p-server -p p2p-edge
+          cargo build --release --locked --target "${{ matrix.target }}" -p p2p-server -p p2p-edge -p p2p-admin
           cp "target/${{ matrix.target }}/release/p2p-server" "dist/nexusgate-server-linux-${{ matrix.arch }}"
           cp "target/${{ matrix.target }}/release/p2p-edge" "dist/nexusgate-edge-linux-${{ matrix.arch }}"
+          cp "target/${{ matrix.target }}/release/p2p-admin" "dist/nexusgate-admin-linux-${{ matrix.arch }}"
 
       - name: Upload executable artifacts
         uses: actions/upload-artifact@v4
@@ -63,6 +78,7 @@ jobs:
           path: |
             dist/nexusgate-server-linux-${{ matrix.arch }}
             dist/nexusgate-edge-linux-${{ matrix.arch }}
+            dist/nexusgate-admin-linux-${{ matrix.arch }}
           if-no-files-found: error
 
   docker:
@@ -83,20 +99,8 @@ jobs:
         run: |
           chmod +x dist/nexusgate-server-linux-amd64 dist/nexusgate-server-linux-arm64
           chmod +x dist/nexusgate-edge-linux-amd64 dist/nexusgate-edge-linux-arm64
+          chmod +x dist/nexusgate-admin-linux-amd64 dist/nexusgate-admin-linux-arm64
           ls -lh dist
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build web static files
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
 
       - name: Set up QEMU with Docker Hub retry
         shell: bash
