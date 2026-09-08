@@ -10,9 +10,10 @@ use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "p2p-server", about = "P2P Network Super Node")]
+#[command(name = "p2p-server", about = "NexusGate Super Node")]
 struct Args {
-    #[arg(short, long, default_value = "server/config/server.toml")]
+    /// Config file path (default: server.toml beside this executable)
+    #[arg(short, long, default_value_t = ServerConfig::default_path().display().to_string())]
     config: String,
 }
 

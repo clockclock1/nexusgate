@@ -3,9 +3,10 @@ use p2p_edge::{run_edge, EdgeConfig};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "p2p-edge", about = "P2P Network Edge Node")]
+#[command(name = "p2p-edge", about = "NexusGate Edge Node")]
 struct Args {
-    #[arg(short, long, default_value = "client/config/edge.toml")]
+    /// Config file path (default: edge.toml beside this executable)
+    #[arg(short, long, default_value_t = EdgeConfig::default_path().display().to_string())]
     config: String,
 }
 
@@ -16,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    let cfg = EdgeConfig::load(&args.config)?;
+    let cfg = EdgeConfig::load_or_init(&args.config)?;
     tracing::info!(node_id = %cfg.node_id, server = %cfg.server, "starting p2p-edge");
     run_edge(cfg).await
 }

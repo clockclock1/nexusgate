@@ -83,14 +83,30 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    pub fn default_path() -> PathBuf {
+        p2p_common::default_config_beside_exe("server.toml")
+    }
+
     pub fn load(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         if path.exists() {
-            Ok(p2p_common::load_toml_config(path)?)
-        } else {
-            tracing::warn!(path = %path.display(), "config not found, using defaults");
-            Ok(Self::default())
+            return Ok(p2p_common::load_toml_config(path)?);
         }
+
+        let cfg = Self::default();
+        let body = toml::to_string_pretty(&cfg)?;
+        let content = format!(
+            "# NexusGate Server 配置文件（首次运行自动生成）\n\
+             # 请按需修改端口、管理员账号与 jwt_secret。\n\
+             #\n\
+             {body}"
+        );
+        p2p_common::write_config_file(path, &content)?;
+        tracing::warn!(
+            path = %path.display(),
+            "config not found, wrote defaults and continuing"
+        );
+        Ok(cfg)
     }
 
     pub fn ensure_db_parent(&self) -> anyhow::Result<()> {
