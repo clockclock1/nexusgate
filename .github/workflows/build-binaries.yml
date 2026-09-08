@@ -9,37 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  prepare-web:
-    name: prepare-web-dist
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build frontend
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-          test -f dist/index.html
-
-      - name: Upload web dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-dist
-          path: web/dist
-          if-no-files-found: error
-
   build:
     name: ${{ matrix.name }}
-    needs: prepare-web
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -86,11 +57,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download web dist
-        uses: actions/download-artifact@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          name: web-dist
-          path: web/dist
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build UI
+        shell: bash
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -104,11 +84,10 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Build server, edge and admin
+      - name: Build executables
         shell: bash
         run: |
           mkdir -p dist
-          test -f web/dist/index.html
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi

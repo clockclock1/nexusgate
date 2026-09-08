@@ -390,13 +390,18 @@ kubectl apply -f deploy/kubernetes/service.yaml
 
 ## CI / CD（GitHub Actions）
 
-参照 [Failover-Proxy workflows](https://github.com/clockclock1/Failover-Proxy/tree/main/.github/workflows)，在 **Publish Release** 时触发：
+参照 [Failover-Proxy workflows](https://github.com/clockclock1/Failover-Proxy/tree/main/.github/workflows)，在 **Publish Release** 时触发（与其相同的两套流水线）：
 
 | Workflow | 作用 |
 |----------|------|
-| `Build Executables` | 多平台编译 Server + Edge + **Admin（内嵌前端）**，并挂到 Release |
-| `Build Web Frontend` | 可选：单独构建前端 zip（兼容旧 Nginx 部署） |
-| `Docker Image` | 构建并推送 server / edge / web（admin）多架构镜像到 GHCR |
+| `Build Executables` | 各平台先 `npm` 构建前端，再编译 Server / Edge / Admin（Admin 内嵌前端），产物挂到 Release |
+| `Docker Image` | Linux amd64/arm64 同样先构建前端再编译，再推送 server / edge / web 镜像到 GHCR |
+
+Release 资产示例：
+
+- `nexusgate-server-linux-amd64` / `nexusgate-edge-linux-amd64` / `nexusgate-admin-linux-amd64`
+- Windows / macOS / arm64 同理
+- 镜像：`ghcr.io/clockclock1/nexusgate-{server,edge,web}`
 
 ---
 

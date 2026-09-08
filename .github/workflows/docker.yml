@@ -33,6 +33,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -44,20 +58,6 @@ jobs:
       - name: Install Linux arm64 linker
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build frontend for embed
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-          test -f dist/index.html
 
       - name: Build executables
         shell: bash
