@@ -99,31 +99,40 @@ sudo bash scripts/install-ng.sh
 sudo ng install-server
 ```
 
-会自动：
+流程：
 
-- 从 GitHub Release 下载最新 `nexusgate-server-linux-amd64|arm64`
-- 写入配置与 systemd 单元并 **enable --now**（开机自启）
-- 默认监听 API `3000` / Control `7000` / Data `7001` / Gateway `8080`
+1. 从 GitHub Release 下载最新 `nexusgate-server-linux-amd64|arm64`
+2. **逐项交互配置**（监听地址、端口、管理员账号、JWT、P2P/中继等；回车保留默认）
+3. 确认后写入 systemd 并启用开机自启、立即启动
+
+默认值一般为 API `3000` / Control `7000` / Data `7001` / Gateway `8080`，管理员 `admin` / `admin123`。
 
 ### 3. 安装并启动客户端（内网机器）
 
 ```bash
 sudo ng install-client
-sudo ng config-client   # 填写 node_id、token、server 公网地址
-sudo ng restart client
 ```
 
-`node_id` / `token` 在服务端管理面板「创建节点」后获得（或调 API `/api/nodes`）。
+同样先下载，再**逐项填写** `node_id` / `token` / `server` 与本地服务映射，最后确认自启。
+
+`node_id` / `token` 在服务端管理面板「创建节点」后获得（或调 API `/api/nodes`）。若安装时暂未拿到 token，可稍后：
+
+```bash
+sudo ng config-client
+sudo ng restart client
+```
 
 ### 4. 日常运维
 
 ```bash
+sudo ng                 # 数字菜单（除 0 退出外，操作完回菜单）
 sudo ng start all
 sudo ng stop server
 sudo ng restart client
 sudo ng update-server      # 拉 GitHub 最新服务端并重启
 sudo ng update-client
-sudo ng config-server
+sudo ng config-server      # 逐项改服务端配置
+sudo ng config-client      # 逐项改客户端配置
 sudo ng logs server
 sudo ng uninstall-client   # 完全卸载客户端
 sudo ng uninstall-server   # 完全卸载服务端（含数据）
@@ -134,10 +143,10 @@ sudo ng self-update        # 更新 ng 脚本自身
 
 | 命令 | 说明 |
 |------|------|
-| `install-server` / `install-client` | 安装并 systemd 开机自启 |
+| `install-server` / `install-client` | 下载 → 逐项配置 → systemd 开机自启 |
 | `start` / `stop` / `restart [server\|client\|all]` | 启停控制 |
 | `update-server` / `update-client` | 从 GitHub Release 更新二进制 |
-| `config-server` / `config-client` | 编辑配置并可选重启 |
+| `config-server` / `config-client` | **逐项交互配置**（可选重启），不直接打开编辑器 |
 | `uninstall-server` / `uninstall-client` | **完全卸载**（配置/数据/单元） |
 | `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
 | `uninstall-ng` | 仅卸载管理脚本 `ng`（保留已装服务端/客户端） |
