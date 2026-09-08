@@ -139,8 +139,10 @@ sudo ng self-update        # 更新 ng 脚本自身
 | `config-server` / `config-client` | 编辑配置并可选重启 |
 | `uninstall-server` / `uninstall-client` | **完全卸载**（配置/数据/单元） |
 | `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
+| `uninstall-ng` | 仅卸载管理脚本 `ng`（保留已装服务端/客户端） |
 | `status` / `logs` | 状态与日志 |
 | `self-update` | 更新管理脚本 |
+| `mirror` / `test-mirror` | 镜像源设置与探测 |
 
 落盘位置：
 

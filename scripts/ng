@@ -732,6 +732,45 @@ cmd_uninstall_all() {
   log "NexusGate 已完全卸载"
 }
 
+cmd_uninstall_ng() {
+  need_root "uninstall-ng"
+  echo -e "${BOLD}卸载管理脚本 ng${NC}"
+  echo
+  echo "将删除:"
+  echo "  - ${NG_LINK}"
+  [[ -f "${PREFIX}/scripts/ng" ]] && echo "  - ${PREFIX}/scripts/ng"
+  echo
+  if installed_server || installed_client; then
+    warn "注意: 服务端/客户端仍保留，不会随 ng 一并删除。"
+    warn "若要连同组件一起清掉，请用菜单「完全卸载全部」或: sudo ng uninstall-all"
+    echo
+  fi
+  read -r -p "确认卸载 ng 管理脚本? 输入 yes 继续: " ans
+  [[ "$ans" == "yes" ]] || die "已取消"
+
+  local removed=0
+  if [[ -L "$NG_LINK" || -f "$NG_LINK" ]]; then
+    rm -f "$NG_LINK"
+    log "已删除 ${NG_LINK}"
+    removed=1
+  else
+    warn "未找到 ${NG_LINK}"
+  fi
+  if [[ -f "${PREFIX}/scripts/ng" ]]; then
+    rm -f "${PREFIX}/scripts/ng"
+    rmdir "${PREFIX}/scripts" 2>/dev/null || true
+    log "已删除 ${PREFIX}/scripts/ng"
+    removed=1
+  fi
+
+  if ((removed)); then
+    log "ng 管理脚本已卸载。之后可重新安装:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install-ng.sh | sudo bash"
+  else
+    warn "没有可删除的 ng 脚本文件"
+  fi
+}
+
 cmd_status() {
   echo -e "${BOLD}NexusGate 状态${NC}"
   echo "安装目录: ${PREFIX}"
@@ -819,6 +858,7 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
   uninstall-server        完全卸载服务端（含配置与数据）
   uninstall-client        完全卸载客户端（含配置）
   uninstall-all           卸载全部并清理 /opt/nexusgate 与系统用户
+  uninstall-ng            仅卸载管理脚本 ng（不影响已装服务端/客户端）
 
 运行控制:
   start   [server|client|all]    启动（默认 all）
@@ -933,7 +973,8 @@ menu() {
     echo "  -------- 卸载 --------"
     echo "  12) 卸载客户端（完全清理）"
     echo "  13) 卸载服务端（完全清理）"
-    echo "  14) 完全卸载全部"
+    echo "  14) 完全卸载全部（含组件）"
+    echo "  19) 卸载 ng 管理脚本"
     echo
     echo "  -------- 其它 --------"
     echo "  15) 更新本管理脚本 ng"
@@ -1025,6 +1066,15 @@ menu() {
         cmd_test_mirror
         pause
         ;;
+      19)
+        cmd_uninstall_ng
+        # 脚本已删则直接退出，不再回菜单
+        if [[ ! -f "$NG_LINK" && ! -L "$NG_LINK" ]]; then
+          echo "ng 已卸载，退出。"
+          exit 0
+        fi
+        pause
+        ;;
       0|q|Q)
         echo "已退出。"
         exit 0
@@ -1054,6 +1104,7 @@ main() {
     uninstall-server|rs) cmd_uninstall_server "$@" ;;
     uninstall-client|rc) cmd_uninstall_client "$@" ;;
     uninstall-all|ra)    cmd_uninstall_all "$@" ;;
+    uninstall-ng|rng)    cmd_uninstall_ng "$@" ;;
     start)   cmd_start "$@" ;;
     stop)    cmd_stop "$@" ;;
     restart) cmd_restart "$@" ;;
