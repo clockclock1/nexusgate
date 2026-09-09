@@ -104,6 +104,50 @@ pub enum PathKind {
     P2p,
 }
 
+/// Peer role in the management Hub mesh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeerRole {
+    Edge,
+    Server,
+    Hub,
+}
+
+impl PeerRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Edge => "edge",
+            Self::Server => "server",
+            Self::Hub => "hub",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "edge" | "client" => Some(Self::Edge),
+            "server" | "supernode" => Some(Self::Server),
+            "hub" | "admin" => Some(Self::Hub),
+            _ => None,
+        }
+    }
+}
+
+/// Purpose of a Hub-mediated peer path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeerPathPurpose {
+    /// Management / control traffic between edge and server via Hub.
+    Mgmt,
+    /// Generic 1:1 data tunnel via Hub relay (or P2P).
+    Data,
+}
+
+impl Default for PeerPathPurpose {
+    fn default() -> Self {
+        Self::Mgmt
+    }
+}
+
 /// Service registration descriptor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceInfo {

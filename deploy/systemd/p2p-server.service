@@ -7,7 +7,7 @@ Type=simple
 User=nexusgate
 WorkingDirectory=/opt/nexusgate
 ExecStart=/usr/local/bin/p2p-server --config /opt/nexusgate/server/config/server.toml
-Restart=on-failure
+Restart=always
 RestartSec=3
 LimitNOFILE=1048576
 Environment=RUST_LOG=info

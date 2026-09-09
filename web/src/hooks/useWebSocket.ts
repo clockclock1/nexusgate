@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '@/stores/authStore'
+import { useServerStore } from '@/stores/serverStore'
 
 export type WsStatus = 'connecting' | 'open' | 'closed' | 'error'
 
@@ -23,12 +24,13 @@ export function useWebSocket<T = unknown>({
   const timerRef = useRef<number | null>(null)
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
+  const activeServerId = useServerStore((s) => s.activeServerId)
 
   const clearTimer = () => {
     if (timerRef.current != null) {
       window.clearTimeout(timerRef.current)
-      timerRef.current = null
     }
+    timerRef.current = null
   }
 
   const connect = useCallback(() => {
@@ -42,7 +44,10 @@ export function useWebSocket<T = unknown>({
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const token = useAuthStore.getState().token || localStorage.getItem('token')
-    const qs = token ? `?token=${encodeURIComponent(token)}` : ''
+    const params = new URLSearchParams()
+    if (token) params.set('token', token)
+    if (activeServerId) params.set('server', activeServerId)
+    const qs = params.toString() ? `?${params.toString()}` : ''
     const url = `${protocol}//${window.location.host}${path}${qs}`
 
     setStatus('connecting')
@@ -66,7 +71,7 @@ export function useWebSocket<T = unknown>({
         /* ignore non-json */
       }
     }
-  }, [enabled, path, reconnectMs])
+  }, [enabled, path, reconnectMs, activeServerId])
 
   useEffect(() => {
     if (!enabled) {

@@ -9,6 +9,13 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
 pub async fn run_edge(cfg: EdgeConfig) -> anyhow::Result<()> {
+    if cfg.hub_host.as_ref().is_some_and(|h| !h.trim().is_empty()) {
+        let hub_cfg = cfg.clone();
+        tokio::spawn(async move {
+            crate::hub_client::run_hub_client(hub_cfg).await;
+        });
+    }
+
     loop {
         match run_once(&cfg).await {
             Ok(()) => warn!("control session closed, reconnecting..."),
@@ -37,6 +44,7 @@ async fn run_once(cfg: &EdgeConfig) -> anyhow::Result<()> {
         .send(ControlMessage::Auth {
             node_id: cfg.node_id.clone(),
             token: cfg.token.clone(),
+            role: None,
         })
         .await?;
 

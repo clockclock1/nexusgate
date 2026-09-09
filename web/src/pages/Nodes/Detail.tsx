@@ -3,6 +3,8 @@ import {
   Breadcrumb,
   Button,
   Descriptions,
+  Modal,
+  Popconfirm,
   Space,
   Spin,
   Table,
@@ -37,6 +39,7 @@ export default function NodeDetailPage() {
   const [connections, setConnections] = useState<ConnectionInfo[]>([])
   const [traffic, setTraffic] = useState<{ timestamp: string; rx_bytes: number; tx_bytes: number }[]>([])
   const [loading, setLoading] = useState(true)
+  const [tokenModal, setTokenModal] = useState<{ node_id: string; token: string } | null>(null)
 
   const load = useCallback(async () => {
     if (!id) return
@@ -65,6 +68,16 @@ export default function NodeDetailPage() {
   useEffect(() => {
     load()
   }, [load])
+
+  const handleRegen = async () => {
+    if (!id) return
+    try {
+      const res = await nodesApi.regenToken(id)
+      setTokenModal(res)
+    } catch (err) {
+      message.error(getErrorMessage(err, '重置 Token 失败'))
+    }
+  }
 
   if (loading && !node) {
     return (
@@ -125,9 +138,14 @@ export default function NodeDetailPage() {
           </Title>
           {st ? <Tag color={st.color}>{st.label}</Tag> : null}
         </Space>
-        <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
-          刷新
-        </Button>
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
+            刷新
+          </Button>
+          <Popconfirm title="重置后旧 Token 立即失效，确定？" onConfirm={handleRegen}>
+            <Button>换 Token</Button>
+          </Popconfirm>
+        </Space>
       </div>
 
       <div className="page-card" style={{ padding: 20 }}>
@@ -201,6 +219,23 @@ export default function NodeDetailPage() {
           ]}
         />
       </div>
+
+      <Modal
+        title="新 Token（旧 Token 立即失效）"
+        open={!!tokenModal}
+        onCancel={() => setTokenModal(null)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setTokenModal(null)}>
+            关闭
+          </Button>,
+        ]}
+      >
+        {tokenModal ? (
+          <Typography.Paragraph copyable={{ text: tokenModal.token }} style={{ wordBreak: 'break-all' }}>
+            <Typography.Text code>{tokenModal.token}</Typography.Text>
+          </Typography.Paragraph>
+        ) : null}
+      </Modal>
     </Space>
   )
 }

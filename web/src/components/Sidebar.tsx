@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import {
   ApiOutlined,
   ApartmentOutlined,
+  CloudServerOutlined,
   ClusterOutlined,
   DashboardOutlined,
   DeploymentUnitOutlined,
@@ -19,8 +20,9 @@ const { Sider } = Layout
 
 const items = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
-  { key: '/server', icon: <DeploymentUnitOutlined />, label: '服务端' },
-  { key: '/nodes', icon: <ClusterOutlined />, label: '节点' },
+  { key: '/servers', icon: <CloudServerOutlined />, label: '服务端节点' },
+  { key: '/server', icon: <DeploymentUnitOutlined />, label: '当前服务端' },
+  { key: '/nodes', icon: <ClusterOutlined />, label: '客户端节点' },
   { key: '/services', icon: <ApiOutlined />, label: '服务' },
   { key: '/routes', icon: <NodeIndexOutlined />, label: '路由' },
   { key: '/p2p', icon: <ShareAltOutlined />, label: 'P2P 网络' },

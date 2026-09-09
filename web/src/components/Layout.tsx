@@ -4,6 +4,8 @@ import { Outlet } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import HeaderBar from './Header'
 import { serverApi } from '@/api'
+import { applyServerSession } from '@/stores/authStore'
+import { useServerStore } from '@/stores/serverStore'
 
 const { Content } = Layout
 
@@ -11,6 +13,25 @@ export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false)
   const [serverOnline, setServerOnline] = useState(true)
   const [booting, setBooting] = useState(true)
+  const activeServerId = useServerStore((s) => s.activeServerId)
+  const loadServers = useServerStore((s) => s.loadServers)
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        await loadServers()
+        applyServerSession()
+      } catch {
+        /* panel local API may be down */
+      } finally {
+        if (alive) setBooting(false)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [loadServers])
 
   useEffect(() => {
     let alive = true
@@ -20,17 +41,26 @@ export default function AppLayout() {
         if (alive) setServerOnline(info.status !== 'offline')
       } catch {
         if (alive) setServerOnline(false)
-      } finally {
-        if (alive) setBooting(false)
       }
     }
-    check()
-    const t = window.setInterval(check, 30000)
+    if (!booting && activeServerId) {
+      check()
+      const t = window.setInterval(check, 30000)
+      const onChanged = () => {
+        applyServerSession()
+        check()
+      }
+      window.addEventListener('nexus-server-changed', onChanged)
+      return () => {
+        alive = false
+        window.clearInterval(t)
+        window.removeEventListener('nexus-server-changed', onChanged)
+      }
+    }
     return () => {
       alive = false
-      window.clearInterval(t)
     }
-  }, [])
+  }, [activeServerId, booting])
 
   if (booting) {
     return (

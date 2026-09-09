@@ -29,6 +29,19 @@ pub struct ServerConfig {
     pub enable_relay: bool,
     #[serde(default)]
     pub enable_p2p: bool,
+
+    /// Admin Hub host (panel). When set, this Super Node dials into the Hub.
+    #[serde(default)]
+    pub hub_host: Option<String>,
+    #[serde(default = "default_hub_control_port")]
+    pub hub_control_port: u16,
+    #[serde(default = "default_hub_data_port")]
+    pub hub_data_port: u16,
+    #[serde(default)]
+    pub hub_token: Option<String>,
+    /// Identity on the Hub (should match admin [[servers]].id).
+    #[serde(default)]
+    pub hub_server_id: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -61,6 +74,12 @@ fn default_admin_user() -> String {
 fn default_admin_pass() -> String {
     "admin123".into()
 }
+fn default_hub_control_port() -> u16 {
+    7100
+}
+fn default_hub_data_port() -> u16 {
+    7101
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -78,6 +97,11 @@ impl Default for ServerConfig {
             max_connections: 100_000,
             enable_relay: true,
             enable_p2p: true,
+            hub_host: None,
+            hub_control_port: default_hub_control_port(),
+            hub_data_port: default_hub_data_port(),
+            hub_token: None,
+            hub_server_id: None,
         }
     }
 }
@@ -114,6 +138,20 @@ impl ServerConfig {
             let path = PathBuf::from(rest);
             p2p_common::ensure_parent_dir(&path)?;
         }
+        Ok(())
+    }
+
+    /// Persist current config to TOML (secrets included; file must stay host-protected).
+    pub fn save(&self, path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
+        let path = path.as_ref();
+        let body = toml::to_string_pretty(self)?;
+        let content = format!(
+            "# NexusGate Server 配置文件\n\
+             # 可由管理面板「系统设置」写入；端口等变更通常需重启后生效。\n\
+             #\n\
+             {body}"
+        );
+        p2p_common::write_config_file(path, &content)?;
         Ok(())
     }
 }

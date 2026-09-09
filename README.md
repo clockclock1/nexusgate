@@ -154,7 +154,7 @@ sudo ng restart client
 sudo ng update-server      # 拉 GitHub 最新服务端并重启
 sudo ng update-client
 sudo ng update-web
-sudo ng config-server      # 逐项改服务端配置
+sudo ng config-server      # 备用：CLI 改服务端（推荐在管理面板 Settings/Server）
 sudo ng config-client      # 逐项改客户端配置
 sudo ng config-web         # 逐项改管理面板端口/反代
 sudo ng show-config        # 查看当前配置（可加 server|client|web）
@@ -172,7 +172,7 @@ sudo ng self-update        # 更新 ng 脚本自身
 | `install-server` / `install-client` / `install-web` | 下载 → 逐项配置 → systemd 开机自启 |
 | `start` / `stop` / `restart [server\|client\|web\|all]` | 启停控制 |
 | `update-server` / `update-client` / `update-web` | 从 GitHub Release 更新 |
-| `config-server` / `config-client` / `config-web` | **逐项交互配置**（可选重启） |
+| `config-server` / `config-client` / `config-web` | CLI 配置（服务端日常请用管理面板） |
 | `show-config [server\|client\|web\|all]` | 查看当前配置内容 |
 | `uninstall-server` / `uninstall-client` / `uninstall-web` | **完全卸载**（配置/数据/单元） |
 | `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
@@ -279,7 +279,28 @@ curl -s -X POST http://127.0.0.1:3000/api/nodes \
 
 Dashboard / Server / Nodes / Services / Routes / P2P / Connections / Traffic / Logs / Users / Settings
 
-实时数据通过 `/ws/dashboard`、`/ws/connections`、`/ws/traffic`、`/ws/logs` 推送。
+**日常服务端管理请在面板完成**（不再依赖改 TOML / `ng config-server`）：
+
+| 面板 | 能力 |
+|------|------|
+| 服务端节点 | 多 Super Node 注册 + Admin Hub 在线拓扑（server/edge dial 入） |
+| Nodes（客户端节点） | 当前服务端下：创建节点、改名/启用禁用、重置 Token、删除 |
+| Server（当前服务端） | 查看运行状态、编辑并持久化端口/P2P/中继、重启进程 |
+| Settings | 写入当前服务端 `server.toml`（监听、端口、JWT、P2P/中继） |
+| Users / Services / Routes | 账号与穿透业务 CRUD（作用域=当前选中的服务端） |
+
+主机级安装/更新/卸载仍用 `ng`。端口变更保存后需在 Server 页重启；systemd 单元需 `Restart=always`（`ng install-server` 已写入）。
+
+**Admin Hub（管理面板即 P2P 中枢）**
+
+- `p2p-admin` 监听 Hub Control `7100` / Data `7101`（`admin.toml`）
+- Super Node 配置 `hub_host` / `hub_token` / `hub_server_id` 后主动 dial 进 Hub
+- Edge 配置 `hub_host` / `hub_token` 后 dial 进 Hub，并尝试对所有在线服务端开通管理通道（**优先 P2P，失败则 Hub 中转**）
+- 面板访问 `/api` 时：若目标服务端已在 Hub 在线，走 `MGMT_FORWARD`；否则回退 HTTP `api_upstream`
+
+一个管理面板可通过顶栏切换多个服务端；每个服务端各自维护多台 Edge；Hub 侧则可看到全部 dial 入的服务端与客户端。
+
+实时数据通过 `/ws/dashboard`、`/ws/connections`、`/ws/traffic`、`/ws/logs` 推送（带 `server=` 选定上游）。
 
 ---
 
@@ -306,7 +327,9 @@ sudo ng install-client
 **前端管理面板（独立二进制，内嵌静态资源）**
 
 - `nexusgate-admin-windows-amd64.exe` / `nexusgate-admin-linux-amd64` 等
-- 仅负责：托管 SPA + 反代 `/api`、`/ws` 到服务端 API
+- 负责：托管 SPA + 反代 `/api`、`/ws` 到**可选多个**服务端 API
+- 同时作为 **Admin Hub**：服务端/客户端 P2P 接入（失败中转）
+- 本地管理接口：`/admin/api/servers`、`/admin/api/hub/*`
 
 ```bash
 ./nexusgate-server-linux-amd64 --config server/config/server.toml

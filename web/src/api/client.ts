@@ -1,5 +1,6 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/stores/authStore'
+import { useServerStore } from '@/stores/serverStore'
 
 const api = axios.create({
   baseURL: '/api',
@@ -10,7 +11,11 @@ const api = axios.create({
 })
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = localStorage.getItem('token') || useAuthStore.getState().token
+  const serverId = useServerStore.getState().activeServerId
+  if (serverId) {
+    config.headers['X-Nexus-Server'] = serverId
+  }
+  const token = useAuthStore.getState().token || localStorage.getItem('token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }

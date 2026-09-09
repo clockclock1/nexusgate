@@ -414,7 +414,7 @@ User=${SYSUSER}
 Group=${SYSUSER}
 WorkingDirectory=${PREFIX}
 ExecStart=${SERVER_BIN} --config ${SERVER_CFG}
-Restart=on-failure
+Restart=always
 RestartSec=3
 LimitNOFILE=1048576
 Environment=RUST_LOG=info
@@ -457,6 +457,18 @@ write_web_config_file() {
 listen = "${listen}"
 listen_port = ${listen_port}
 api_upstream = "${api_upstream}"
+default_server = "default"
+
+hub_enabled = true
+hub_listen = "0.0.0.0"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "change-me-hub-token"
+
+[[servers]]
+id = "default"
+name = "默认服务端"
+api_upstream = "${api_upstream}"
 EOF
 }
 
@@ -491,6 +503,7 @@ configure_web_interactive() {
   echo -e "${BOLD}======== 管理面板配置向导 ========${NC}"
   echo "  二进制: ${WEB_BIN}（内嵌前端，反代 /api 与 /ws）"
   echo "  配置文件: ${WEB_CFG}"
+  echo "  提示: 安装后可在面板「服务端节点」继续添加多个 Super Node"
   echo
 
   local listen listen_port api_upstream def_api
@@ -622,6 +635,7 @@ configure_server_interactive() {
   ensure_dirs
   echo
   echo -e "${BOLD}======== 服务端配置向导 ========${NC}"
+  echo "  提示: 日常运维请优先使用管理面板「系统设置 / 服务端」页面"
   echo "  请逐项确认（直接回车 = 使用方括号内默认值）"
   echo "  配置文件将写入: ${SERVER_CFG}"
   echo

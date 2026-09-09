@@ -1,7 +1,23 @@
-use p2p_common::{ConnectionId, NatInfo, NodeId, PathKind, PeerCandidate, ProtocolKind};
+use p2p_common::{
+    ConnectionId, NatInfo, NodeId, PathKind, PeerCandidate, PeerPathPurpose, PeerRole, ProtocolKind,
+};
 use serde::{Deserialize, Serialize};
 
-/// Control-channel messages. Business data NEVER goes on the control channel.
+/// Snapshot of a peer online on the Admin Hub.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubPeerInfo {
+    pub node_id: String,
+    pub role: PeerRole,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub online: bool,
+}
+
+/// Control-channel messages. Business data NEVER goes on the control channel
+/// except compact management forwards mediated by the Admin Hub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ControlMessage {
@@ -13,11 +29,16 @@ pub enum ControlMessage {
     Auth {
         node_id: String,
         token: String,
+        /// Optional role when dialing the Admin Hub (`edge` / `server`).
+        #[serde(default)]
+        role: Option<PeerRole>,
     },
     AuthOk {
         node_id: String,
         #[serde(default)]
         server_time: Option<i64>,
+        #[serde(default)]
+        role: Option<PeerRole>,
     },
     Register {
         node_id: String,
@@ -119,6 +140,56 @@ pub enum ControlMessage {
         #[serde(default)]
         path: PathKind,
     },
+
+    /// Hub → peers: full online peer roster (servers + edges).
+    HubPeers {
+        peers: Vec<HubPeerInfo>,
+    },
+
+    /// Edge/Server → Hub: request a path to another peer (P2P first, then relay).
+    OpenPeerPath {
+        request_id: String,
+        target_id: String,
+        #[serde(default)]
+        purpose: PeerPathPurpose,
+        #[serde(default)]
+        prefer_p2p: bool,
+    },
+
+    /// Hub → both peers: dial Hub data port (relay) or use candidates (p2p).
+    PeerPathOffer {
+        request_id: String,
+        connection_id: String,
+        data_token: String,
+        peer_node_id: String,
+        path: PathKind,
+        purpose: PeerPathPurpose,
+        #[serde(default)]
+        candidates: Vec<PeerCandidate>,
+    },
+
+    /// Browser/Admin → Server (via Hub control): forward an HTTP management call.
+    MgmtForward {
+        request_id: String,
+        method: String,
+        path: String,
+        #[serde(default)]
+        headers: Vec<(String, String)>,
+        #[serde(default)]
+        body_b64: Option<String>,
+    },
+
+    /// Server → Hub → Admin: result of MgmtForward.
+    MgmtForwardResult {
+        request_id: String,
+        status: u16,
+        #[serde(default)]
+        headers: Vec<(String, String)>,
+        #[serde(default)]
+        body_b64: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
 }
 
 impl ControlMessage {
@@ -143,6 +214,11 @@ impl ControlMessage {
             Self::ConfigUpdate { .. } => "CONFIG_UPDATE",
             Self::Error { .. } => "ERROR",
             Self::DataReady { .. } => "DATA_READY",
+            Self::HubPeers { .. } => "HUB_PEERS",
+            Self::OpenPeerPath { .. } => "OPEN_PEER_PATH",
+            Self::PeerPathOffer { .. } => "PEER_PATH_OFFER",
+            Self::MgmtForward { .. } => "MGMT_FORWARD",
+            Self::MgmtForwardResult { .. } => "MGMT_FORWARD_RESULT",
         }
     }
 
@@ -166,6 +242,15 @@ impl ControlMessage {
         Self::Auth {
             node_id: node_id.as_str().to_string(),
             token: token.to_string(),
+            role: None,
+        }
+    }
+
+    pub fn auth_with_role(node_id: &str, token: &str, role: PeerRole) -> Self {
+        Self::Auth {
+            node_id: node_id.to_string(),
+            token: token.to_string(),
+            role: Some(role),
         }
     }
 
@@ -210,6 +295,18 @@ mod tests {
                 assert_eq!(data_token, "tok");
             }
             _ => panic!("expected CONNECT"),
+        }
+    }
+
+    #[test]
+    fn serialize_hub_auth_role() {
+        let msg = ControlMessage::auth_with_role("s1", "tok", PeerRole::Server);
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("AUTH"));
+        let back: ControlMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            ControlMessage::Auth { role, .. } => assert_eq!(role, Some(PeerRole::Server)),
+            _ => panic!("expected AUTH"),
         }
     }
 }

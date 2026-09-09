@@ -1,3 +1,15 @@
 listen = "0.0.0.0"
 listen_port = 8088
 api_upstream = "nexusgate-server:3000"
+default_server = "default"
+
+hub_enabled = true
+hub_listen = "0.0.0.0"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "change-me-hub-token"
+
+[[servers]]
+id = "default"
+name = "Compose Server"
+api_upstream = "nexusgate-server:3000"

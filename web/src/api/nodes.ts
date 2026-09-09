@@ -18,16 +18,20 @@ export const nodesApi = {
     const res = await api.get<NodeInfo>(`/nodes/${id}`)
     return res.data
   },
-  create: async (data: Partial<NodeInfo>) => {
+  create: async (data: { name: string; node_id?: string }) => {
     const res = await api.post<NodeInfo>('/nodes', data)
     return res.data
   },
-  update: async (id: string, data: Partial<NodeInfo>) => {
+  update: async (id: string, data: Partial<{ name: string; enabled: boolean }>) => {
     const res = await api.put<NodeInfo>(`/nodes/${id}`, data)
     return res.data
   },
   remove: async (id: string) => {
     await api.delete(`/nodes/${id}`)
+  },
+  regenToken: async (id: string) => {
+    const res = await api.post<{ node_id: string; token: string }>(`/nodes/${id}/token`)
+    return res.data
   },
   getServices: async (id: string) => {
     const res = await api.get<ServiceInfo[]>(`/nodes/${id}/services`)

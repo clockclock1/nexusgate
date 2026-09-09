@@ -7,6 +7,7 @@ use p2p_router::RouteTable;
 use p2p_security::JwtManager;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpStream;
@@ -76,6 +77,7 @@ pub struct LogEntry {
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<parking_lot::RwLock<ServerConfig>>,
+    pub config_path: Arc<PathBuf>,
     pub db: SqlitePool,
     pub jwt: JwtManager,
     pub metrics: Arc<Metrics>,
@@ -89,11 +91,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: ServerConfig, db: SqlitePool) -> Self {
+    pub fn new(config: ServerConfig, config_path: PathBuf, db: SqlitePool) -> Self {
         let jwt = JwtManager::new(config.jwt_secret.clone(), config.jwt_ttl_secs);
         let (event_tx, _) = broadcast::channel(1024);
         Self {
             config: Arc::new(parking_lot::RwLock::new(config)),
+            config_path: Arc::new(config_path),
             db,
             jwt,
             metrics: Metrics::new(),
@@ -105,6 +108,12 @@ impl AppState {
             event_tx,
             started_at: Instant::now(),
         }
+    }
+
+    /// Write in-memory config to `config_path`.
+    pub fn persist_config(&self) -> anyhow::Result<()> {
+        let cfg = self.config.read().clone();
+        cfg.save(self.config_path.as_path())
     }
 
     pub fn push_log(&self, level: &str, target: &str, node_id: Option<String>, message: impl Into<String>) {

@@ -3,8 +3,10 @@ import { Spin } from 'antd'
 import { useEffect, useState, type ReactNode } from 'react'
 import { AppLayout } from '@/components'
 import { useAuthStore } from '@/stores/authStore'
+import { useServerStore } from '@/stores/serverStore'
 import LoginPage from '@/pages/Login'
 import DashboardPage from '@/pages/Dashboard'
+import ServersPage from '@/pages/Servers'
 import ServerPage from '@/pages/Server'
 import NodesPage from '@/pages/Nodes'
 import NodeDetailPage from '@/pages/Nodes/Detail'
@@ -18,22 +20,31 @@ import UsersPage from '@/pages/Users'
 import SettingsPage from '@/pages/Settings'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
-  const token = useAuthStore((s) => s.token)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const hydrateUser = useAuthStore((s) => s.hydrateUser)
+  const syncActive = useAuthStore((s) => s.syncActive)
+  const loadServers = useServerStore((s) => s.loadServers)
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
     let alive = true
     const init = async () => {
-      if (token) await hydrateUser()
+      try {
+        await loadServers()
+      } catch {
+        /* ignore */
+      }
+      syncActive()
+      if (useAuthStore.getState().token) {
+        await hydrateUser()
+      }
       if (alive) setReady(true)
     }
     init()
     return () => {
       alive = false
     }
-  }, [token, hydrateUser])
+  }, [hydrateUser, loadServers, syncActive])
 
   if (!ready) {
     return (
@@ -68,6 +79,7 @@ export default function AppRouter() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="servers" element={<ServersPage />} />
         <Route path="server" element={<ServerPage />} />
         <Route path="nodes" element={<NodesPage />} />
         <Route path="nodes/:id" element={<NodeDetailPage />} />

@@ -1,6 +1,20 @@
-# NexusGate Admin Panel
-# listen_port: panel port
-# api_upstream: p2p-server management API host:port
+# NexusGate Admin Panel + Hub
+# listen / listen_port: Web 面板
+# hub_*: P2P/中转管理中枢（服务端与客户端 dial 进来）
+# [[servers]]: HTTP 反代回退地址
+
 listen = "0.0.0.0"
 listen_port = 8088
+api_upstream = "127.0.0.1:3000"
+default_server = "default"
+
+hub_enabled = true
+hub_listen = "0.0.0.0"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "change-me-hub-token"
+
+[[servers]]
+id = "default"
+name = "默认服务端"
 api_upstream = "127.0.0.1:3000"

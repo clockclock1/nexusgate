@@ -15,6 +15,17 @@ pub struct EdgeConfig {
     pub name: Option<String>,
     #[serde(default)]
     pub services: Vec<LocalService>,
+
+    /// When set, also dial Admin Hub for multi-server management mesh.
+    #[serde(default)]
+    pub hub_host: Option<String>,
+    #[serde(default = "default_hub_control_port")]
+    pub hub_control_port: u16,
+    #[serde(default = "default_hub_data_port")]
+    pub hub_data_port: u16,
+    /// Shared Hub token (same as admin.toml hub_token). Falls back to `token` if empty.
+    #[serde(default)]
+    pub hub_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +49,12 @@ fn default_data_port() -> u16 {
 fn default_proto() -> String {
     "tcp".into()
 }
+fn default_hub_control_port() -> u16 {
+    7100
+}
+fn default_hub_data_port() -> u16 {
+    7101
+}
 
 impl Default for EdgeConfig {
     fn default() -> Self {
@@ -54,6 +71,10 @@ impl Default for EdgeConfig {
                 protocol: default_proto(),
                 local_addr: "127.0.0.1:8000".into(),
             }],
+            hub_host: None,
+            hub_control_port: default_hub_control_port(),
+            hub_data_port: default_hub_data_port(),
+            hub_token: None,
         }
     }
 }

@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let pool = db::init_db(&config).await?;
-    let state = AppState::new(config.clone(), pool);
+    let state = AppState::new(config.clone(), std::path::PathBuf::from(&args.config), pool);
     db::load_routes_into(&state.db, &state.routes).await?;
 
     let listen = config.listen.clone();
@@ -64,6 +64,11 @@ async fn main() -> anyhow::Result<()> {
     let s4 = state.clone();
     tokio::spawn(async move {
         data_plane::cleanup_pending(s4).await;
+    });
+
+    let s5 = state.clone();
+    tokio::spawn(async move {
+        p2p_server::hub_client::run_hub_client(s5).await;
     });
 
     let app = api::router(state);

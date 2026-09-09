@@ -149,10 +149,13 @@ pub async fn server_config(State(state): State<AppState>) -> Json<Value> {
         "api_port": cfg.api_port,
         "control_port": cfg.control_port,
         "data_port": cfg.data_port,
-        "max_nodes": 10000,
-        "heartbeat_interval_secs": 15,
-        "enable_tls": false,
-        "log_level": "info",
+        "gateway_port": cfg.gateway_port,
+        "max_connections": cfg.max_connections,
+        "jwt_ttl_secs": cfg.jwt_ttl_secs,
+        "enable_relay": cfg.enable_relay,
+        "enable_p2p": cfg.enable_p2p,
+        "config_path": state.config_path.display().to_string(),
+        "restart_required_for_ports": true,
     }))
 }
 
@@ -162,14 +165,19 @@ pub struct ServerConfigUpdate {
     pub api_port: Option<u16>,
     pub control_port: Option<u16>,
     pub data_port: Option<u16>,
-    #[allow(dead_code)]
-    pub log_level: Option<String>,
+    pub gateway_port: Option<u16>,
+    pub max_connections: Option<u64>,
+    pub jwt_ttl_secs: Option<i64>,
+    pub enable_relay: Option<bool>,
+    pub enable_p2p: Option<bool>,
+    /// Write-only; omitted/empty leaves secret unchanged.
+    pub jwt_secret: Option<String>,
 }
 
 pub async fn update_server_config(
     State(state): State<AppState>,
     Json(req): Json<ServerConfigUpdate>,
-) -> Json<Value> {
+) -> Result<Json<Value>, AppError> {
     {
         let mut cfg = state.config.write();
         if let Some(v) = req.listen_addr {
@@ -184,12 +192,44 @@ pub async fn update_server_config(
         if let Some(v) = req.data_port {
             cfg.data_port = v;
         }
+        if let Some(v) = req.gateway_port {
+            cfg.gateway_port = v;
+        }
+        if let Some(v) = req.max_connections {
+            cfg.max_connections = v;
+        }
+        if let Some(v) = req.jwt_ttl_secs {
+            cfg.jwt_ttl_secs = v;
+        }
+        if let Some(v) = req.enable_relay {
+            cfg.enable_relay = v;
+        }
+        if let Some(v) = req.enable_p2p {
+            cfg.enable_p2p = v;
+        }
+        if let Some(v) = req.jwt_secret {
+            if !v.is_empty() {
+                cfg.jwt_secret = v;
+            }
+        }
     }
-    server_config(State(state)).await
+    state
+        .persist_config()
+        .map_err(|e| AppError::internal(format!("persist config: {e}")))?;
+    Ok(server_config(State(state)).await)
 }
 
-pub async fn server_restart() -> Json<Value> {
-    Json(json!({ "ok": true, "message": "restart scheduled (apply on next boot)" }))
+pub async fn server_restart(State(state): State<AppState>) -> Json<Value> {
+    state.push_log("warn", "api", None, "restart requested from management panel");
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        tracing::warn!("exiting process for restart (systemd Restart=always)");
+        std::process::exit(0);
+    });
+    Json(json!({
+        "ok": true,
+        "message": "restart scheduled; process will exit shortly"
+    }))
 }
 
 #[derive(Deserialize)]
@@ -238,6 +278,7 @@ pub async fn list_nodes(State(state): State<AppState>) -> Result<Json<Value>, Ap
             json!({
                 "node_id": id,
                 "name": r.get::<String, _>("name"),
+                "enabled": r.get::<i64, _>("enabled") == 1,
                 "status": if r.get::<i64, _>("enabled") != 1 {
                     "disabled"
                 } else if online {
@@ -673,52 +714,79 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<Value> {
             "api_port": cfg.api_port,
             "control_port": cfg.control_port,
             "data_port": cfg.data_port,
+            "gateway_port": cfg.gateway_port,
+            "config_path": state.config_path.display().to_string(),
         },
         "security": {
-            "enable_tls": false,
-            "require_auth": true,
-            "token_ttl_secs": cfg.jwt_ttl_secs,
-            "allow_register": false,
+            "jwt_ttl_secs": cfg.jwt_ttl_secs,
+            "jwt_secret_set": !cfg.jwt_secret.is_empty(),
         },
-        "network": { "mtu": 1400, "keepalive_secs": 30, "dial_timeout_secs": 10 },
         "p2p": {
-            "enable_hole_punch": cfg.enable_p2p,
-            "stun_servers": ["stun:stun.l.google.com:19302"],
-            "prefer_p2p": true,
-            "fallback_relay": true,
+            "enable_p2p": cfg.enable_p2p,
         },
         "relay": {
-            "enable": cfg.enable_relay,
-            "max_bandwidth_mbps": 1000,
+            "enable_relay": cfg.enable_relay,
             "max_connections": cfg.max_connections,
         },
-        "limits": {
-            "max_nodes": 10000,
-            "max_services_per_node": 100,
-            "max_routes": 10000,
-            "rate_limit_rps": 1000,
-        },
-        "logging": { "level": "info", "retention_days": 7, "enable_audit": true },
+        "notes": {
+            "ports_need_restart": true,
+            "admin_seed": "admin_user/admin_password 仅在首次空库时用于种子账号，请用「用户管理」改密码",
+        }
     }))
 }
 
 pub async fn update_settings(
     State(state): State<AppState>,
     Json(v): Json<Value>,
-) -> Json<Value> {
-    if let Some(server) = v.get("server") {
+) -> Result<Json<Value>, AppError> {
+    {
         let mut cfg = state.config.write();
-        if let Some(p) = server.get("api_port").and_then(|x| x.as_u64()) {
-            cfg.api_port = p as u16;
+        if let Some(server) = v.get("server") {
+            if let Some(s) = server.get("listen_addr").and_then(|x| x.as_str()) {
+                cfg.listen = s.to_string();
+            }
+            if let Some(p) = server.get("api_port").and_then(|x| x.as_u64()) {
+                cfg.api_port = p as u16;
+            }
+            if let Some(p) = server.get("control_port").and_then(|x| x.as_u64()) {
+                cfg.control_port = p as u16;
+            }
+            if let Some(p) = server.get("data_port").and_then(|x| x.as_u64()) {
+                cfg.data_port = p as u16;
+            }
+            if let Some(p) = server.get("gateway_port").and_then(|x| x.as_u64()) {
+                cfg.gateway_port = p as u16;
+            }
         }
-        if let Some(p) = server.get("control_port").and_then(|x| x.as_u64()) {
-            cfg.control_port = p as u16;
+        if let Some(sec) = v.get("security") {
+            if let Some(t) = sec.get("jwt_ttl_secs").and_then(|x| x.as_i64()) {
+                cfg.jwt_ttl_secs = t;
+            }
+            if let Some(s) = sec.get("jwt_secret").and_then(|x| x.as_str()) {
+                if !s.is_empty() {
+                    cfg.jwt_secret = s.to_string();
+                }
+            }
         }
-        if let Some(p) = server.get("data_port").and_then(|x| x.as_u64()) {
-            cfg.data_port = p as u16;
+        if let Some(p2p) = v.get("p2p") {
+            if let Some(b) = p2p.get("enable_p2p").and_then(|x| x.as_bool()) {
+                cfg.enable_p2p = b;
+            }
+        }
+        if let Some(relay) = v.get("relay") {
+            if let Some(b) = relay.get("enable_relay").and_then(|x| x.as_bool()) {
+                cfg.enable_relay = b;
+            }
+            if let Some(n) = relay.get("max_connections").and_then(|x| x.as_u64()) {
+                cfg.max_connections = n;
+            }
         }
     }
-    get_settings(State(state)).await
+    state
+        .persist_config()
+        .map_err(|e| AppError::internal(format!("persist config: {e}")))?;
+    let _ = crate::db::audit(&state.db, "admin", "settings.update", "server.toml").await;
+    Ok(get_settings(State(state)).await)
 }
 
 pub async fn list_users(State(state): State<AppState>) -> Result<Json<Value>, AppError> {

@@ -1,4 +1,4 @@
-import { Badge, Button, Dropdown, Space, Typography } from 'antd'
+import { Badge, Button, Dropdown, Select, Space, Typography, message } from 'antd'
 import {
   LogoutOutlined,
   MenuFoldOutlined,
@@ -9,7 +9,8 @@ import {
   UserOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/stores/authStore'
+import { applyServerSession, useAuthStore } from '@/stores/authStore'
+import { useServerStore } from '@/stores/serverStore'
 import { useThemeStore } from '@/stores/themeStore'
 
 const { Text } = Typography
@@ -26,6 +27,24 @@ export default function HeaderBar({ collapsed, onToggle, serverOnline = true }: 
   const logout = useAuthStore((s) => s.logout)
   const mode = useThemeStore((s) => s.mode)
   const toggleTheme = useThemeStore((s) => s.toggle)
+  const servers = useServerStore((s) => s.servers)
+  const activeServerId = useServerStore((s) => s.activeServerId)
+  const setActiveServerId = useServerStore((s) => s.setActiveServerId)
+  const activeServer = useServerStore((s) => s.activeServer)
+
+  const onSwitchServer = (id: string) => {
+    if (id === activeServerId) return
+    setActiveServerId(id)
+    applyServerSession()
+    window.dispatchEvent(new CustomEvent('nexus-server-changed'))
+    const hasSession = Boolean(useAuthStore.getState().sessions[id]?.token)
+    if (!hasSession) {
+      message.info('该服务端尚未登录，请先登录')
+      navigate('/login')
+      return
+    }
+    message.success(`已切换到：${useServerStore.getState().activeServer()?.name || id}`)
+  }
 
   return (
     <div className="app-header ant-layout-header">
@@ -40,10 +59,24 @@ export default function HeaderBar({ collapsed, onToggle, serverOnline = true }: 
         </Text>
       </Space>
 
-      <Space size="middle">
+      <Space size="middle" wrap>
+        <Select
+          style={{ minWidth: 180 }}
+          value={activeServerId ?? undefined}
+          placeholder="选择服务端"
+          options={servers.map((s) => ({
+            value: s.id,
+            label: s.name || s.id,
+          }))}
+          onChange={onSwitchServer}
+          popupMatchSelectWidth={false}
+        />
+
         <Space size={6}>
           <span className={`server-status-dot ${serverOnline ? 'online' : 'offline'}`} />
-          <Text type="secondary">Server: {serverOnline ? 'Online' : 'Offline'}</Text>
+          <Text type="secondary">
+            {activeServer()?.name || 'Server'}: {serverOnline ? 'Online' : 'Offline'}
+          </Text>
         </Space>
 
         <Button
@@ -67,7 +100,7 @@ export default function HeaderBar({ collapsed, onToggle, serverOnline = true }: 
               { type: 'divider' },
               {
                 key: 'logout',
-                label: '退出登录',
+                label: '退出当前服务端',
                 icon: <LogoutOutlined />,
                 onClick: () => {
                   logout()

@@ -1,9 +1,17 @@
+export interface ManagedServer {
+  id: string
+  name: string
+  api_upstream: string
+}
+
 export type NodeStatus = 'online' | 'offline' | 'disabled'
 
 export interface NodeInfo {
   node_id: string
   name: string
   status: NodeStatus
+  enabled?: boolean
+  token?: string
   public_ip?: string
   private_ip?: string
   nat_type?: string
@@ -136,10 +144,13 @@ export interface ServerConfig {
   api_port: number
   control_port: number
   data_port: number
-  max_nodes: number
-  heartbeat_interval_secs: number
-  enable_tls: boolean
-  log_level: string
+  gateway_port: number
+  max_connections: number
+  jwt_ttl_secs: number
+  enable_relay: boolean
+  enable_p2p: boolean
+  config_path?: string
+  restart_required_for_ports?: boolean
 }
 
 export interface AppSettings {
@@ -148,40 +159,25 @@ export interface AppSettings {
     api_port: number
     control_port: number
     data_port: number
-    hostname?: string
+    gateway_port: number
+    config_path?: string
   }
   security: {
-    enable_tls: boolean
-    require_auth: boolean
-    token_ttl_secs: number
-    allow_register: boolean
-  }
-  network: {
-    mtu: number
-    keepalive_secs: number
-    dial_timeout_secs: number
+    jwt_ttl_secs: number
+    jwt_secret_set?: boolean
+    /** write-only */
+    jwt_secret?: string
   }
   p2p: {
-    enable_hole_punch: boolean
-    stun_servers: string[]
-    prefer_p2p: boolean
-    fallback_relay: boolean
+    enable_p2p: boolean
   }
   relay: {
-    enable: boolean
-    max_bandwidth_mbps: number
+    enable_relay: boolean
     max_connections: number
   }
-  limits: {
-    max_nodes: number
-    max_services_per_node: number
-    max_routes: number
-    rate_limit_rps: number
-  }
-  logging: {
-    level: string
-    retention_days: number
-    enable_audit: boolean
+  notes?: {
+    ports_need_restart?: boolean
+    admin_seed?: string
   }
 }
 

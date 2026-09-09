@@ -39,7 +39,7 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
         .await?
         .ok_or_else(|| anyhow::anyhow!("control closed before auth"))?;
     let (node_id, token) = match auth {
-        ControlMessage::Auth { node_id, token } => (node_id, token),
+        ControlMessage::Auth { node_id, token, .. } => (node_id, token),
         other => {
             session
                 .send(ControlMessage::Error {
@@ -77,6 +77,7 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
         .send(ControlMessage::AuthOk {
             node_id: node_id.clone(),
             server_time: Some(chrono::Utc::now().timestamp()),
+            role: None,
         })
         .await?;
 
