@@ -11,3 +11,10 @@ admin_password = "admin123"
 max_connections = 100000
 enable_relay = true
 enable_p2p = true
+
+# 可选：接入管理面板 Admin Hub（p2p-admin 默认 7100/7101）
+# hub_host = "127.0.0.1"
+# hub_control_port = 7100
+# hub_data_port = 7101
+# hub_token = "change-me-hub-token"
+# hub_server_id = "default"

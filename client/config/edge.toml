@@ -5,6 +5,12 @@ control_port = 7000
 data_port = 7001
 name = "demo-edge"
 
+# Hub 字段必须写在 [[services]] 之前（TOML 数组表之后的裸键会归入该 service）
+# hub_host = "127.0.0.1"
+# hub_control_port = 7100
+# hub_data_port = 7101
+# hub_token = "change-me-hub-token"
+
 [[services]]
 service_id = "web"
 name = "local-web"

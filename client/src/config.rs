@@ -102,6 +102,7 @@ impl EdgeConfig {
             "# NexusGate Edge 配置文件（首次运行自动生成）\n\
              # 请修改 node_id / token / server，以及 [[services]] 本地回源地址后重新运行。\n\
              # token 在服务端管理面板「创建节点」后获得。\n\
+             # 若启用 Admin Hub：把 hub_host/hub_token 等写在 [[services]] 之前。\n\
              #\n\
              {body}"
         );

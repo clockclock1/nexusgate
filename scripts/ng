@@ -609,6 +609,7 @@ write_server_config_file() {
   local listen="$1" control_port="$2" data_port="$3" gateway_port="$4" api_port="$5"
   local database_url="$6" jwt_secret="$7" jwt_ttl="$8" admin_user="$9" admin_password="${10}"
   local max_connections="${11}" enable_relay="${12}" enable_p2p="${13}"
+  local hub_block="${14:-}"
   listen="$(toml_escape "$listen")"
   database_url="$(toml_escape "$database_url")"
   jwt_secret="$(toml_escape "$jwt_secret")"
@@ -628,6 +629,7 @@ admin_password = "${admin_password}"
 max_connections = ${max_connections}
 enable_relay = ${enable_relay}
 enable_p2p = ${enable_p2p}
+${hub_block}
 EOF
 }
 
@@ -674,10 +676,28 @@ configure_server_interactive() {
     enable_p2p=false
   fi
 
+  local hub_host hub_token hub_control_port hub_data_port hub_server_id hub_block=""
+  echo
+  echo -e "${BOLD}Admin Hub（可选；服务端 dial 进 p2p-admin）${NC}"
+  hub_host="$(ask_input "hub_host（空=不启用）" "$(toml_get "$SERVER_CFG" hub_host "")" 1)"
+  if [[ -n "$hub_host" ]]; then
+    hub_control_port="$(ask_input "hub_control_port" "$(toml_get "$SERVER_CFG" hub_control_port 7100)" 1)"
+    hub_data_port="$(ask_input "hub_data_port" "$(toml_get "$SERVER_CFG" hub_data_port 7101)" 1)"
+    hub_token="$(ask_input "hub_token" "$(toml_get "$SERVER_CFG" hub_token "change-me-hub-token")" 1)"
+    hub_server_id="$(ask_input "hub_server_id" "$(toml_get "$SERVER_CFG" hub_server_id "default")" 1)"
+    hub_block="
+hub_host = \"$(toml_escape "$hub_host")\"
+hub_control_port = ${hub_control_port}
+hub_data_port = ${hub_data_port}
+hub_token = \"$(toml_escape "$hub_token")\"
+hub_server_id = \"$(toml_escape "$hub_server_id")\"
+"
+  fi
+
   write_server_config_file \
     "$listen" "$control_port" "$data_port" "$gateway_port" "$api_port" \
     "$database_url" "$jwt_secret" "$jwt_ttl" "$admin_user" "$admin_password" \
-    "$max_connections" "$enable_relay" "$enable_p2p"
+    "$max_connections" "$enable_relay" "$enable_p2p" "$hub_block"
 
   echo
   log "服务端配置已保存: ${SERVER_CFG}"
@@ -723,6 +743,26 @@ configure_client_interactive() {
   data_port="$(ask_input "数据面端口 data_port" "$(toml_get "$CLIENT_CFG" data_port 7001)" 1)"
   name="$(ask_input "节点显示名 name" "$(toml_get "$CLIENT_CFG" name "demo-edge")" 1)"
 
+  local hub_host hub_token hub_control_port hub_data_port hub_block=""
+  echo
+  echo -e "${BOLD}Admin Hub（可选；连面板 Hub 做多服务端发现）${NC}"
+  echo "  注意: hub_* 必须写在 [[services]] 之前，否则会被 TOML 吞进 service 表"
+  hub_host="$(ask_input "hub_host（空=不启用）" "$(toml_get "$CLIENT_CFG" hub_host "")" 1)"
+  if [[ -n "$hub_host" ]]; then
+    hub_control_port="$(ask_input "hub_control_port" "$(toml_get "$CLIENT_CFG" hub_control_port 7100)" 1)"
+    hub_data_port="$(ask_input "hub_data_port" "$(toml_get "$CLIENT_CFG" hub_data_port 7101)" 1)"
+    hub_token="$(ask_input "hub_token（空则回退用节点 token）" "$(toml_get "$CLIENT_CFG" hub_token "")" 1)"
+    hub_block="
+hub_host = \"$(toml_escape "$hub_host")\"
+hub_control_port = ${hub_control_port}
+hub_data_port = ${hub_data_port}
+"
+    if [[ -n "$hub_token" ]]; then
+      hub_block+="hub_token = \"$(toml_escape "$hub_token")\"
+"
+    fi
+  fi
+
   echo
   echo -e "${BOLD}本地服务映射（可配置多个）${NC}"
   while true; do
@@ -752,7 +792,8 @@ local_addr = \"$(toml_escape "$laddr")\"
     break
   done
 
-  write_client_config_file "$node_id" "$token" "$server" "$control_port" "$data_port" "$name" "$services_block"
+  # hub_block 必须在 services 之前写入
+  write_client_config_file "$node_id" "$token" "$server" "$control_port" "$data_port" "$name" "${hub_block}${services_block}"
 
   echo
   log "客户端配置已保存: ${CLIENT_CFG}"
@@ -765,6 +806,15 @@ local_addr = \"$(toml_escape "$laddr")\"
 
 unit_exists() { [[ -f "/etc/systemd/system/$1" ]]; }
 
+# 旧版管理面板：nginx + zip 静态资源（与 p2p-admin 互斥）
+legacy_web_installed() {
+  unit_exists "$WEB_UNIT" || return 1
+  if [[ -f "/etc/systemd/system/${WEB_UNIT}" ]] && grep -q 'nginx' "/etc/systemd/system/${WEB_UNIT}" 2>/dev/null; then
+    return 0
+  fi
+  [[ -f "${WEB_DIR}/nginx.conf" || -f "${WEB_DIR}/nexusgate-web.zip" ]]
+}
+
 svc_do() {
   local action="$1"
   local unit="$2"
@@ -774,7 +824,25 @@ svc_do() {
 
 installed_server() { [[ -x "$SERVER_BIN" ]] && unit_exists "$SERVER_UNIT"; }
 installed_client() { [[ -x "$EDGE_BIN" ]] && unit_exists "$EDGE_UNIT"; }
-installed_web() { [[ -x "$WEB_BIN" ]] && unit_exists "$WEB_UNIT"; }
+# 新版 p2p-admin，或仍可被 update-web 迁移的旧 nginx 面板
+installed_web() {
+  if [[ -x "$WEB_BIN" ]] && unit_exists "$WEB_UNIT" && ! legacy_web_installed; then
+    return 0
+  fi
+  legacy_web_installed
+}
+
+# 从 nginx/zip 旧面板迁移到 p2p-admin（停服并清理旧文件，保留目录）
+migrate_legacy_web_if_needed() {
+  legacy_web_installed || return 0
+  warn "检测到旧版管理面板（nginx/zip），将迁移为内嵌前端的 p2p-admin"
+  systemctl disable --now "$WEB_UNIT" 2>/dev/null || true
+  # 保留 version；清理 nginx/zip 残留
+  rm -f "${WEB_DIR}/nginx.conf" "${WEB_DIR}/nginx.pid" "${WEB_DIR}/nexusgate-web.zip" "${WEB_DIR}/web.env"
+  rm -rf "${WEB_DIR}/dist" "${WEB_DIR}/logs" "${WEB_DIR}/tmp"
+  # 旧单元稍后由 write_web_unit 覆盖
+  return 0
+}
 
 cmd_install_server() {
   need_root "install-server"
@@ -858,6 +926,7 @@ cmd_install_web() {
   ensure_web_tools
   ensure_dirs
   ensure_user
+  migrate_legacy_web_if_needed
   install_web_bin_from_release
 
   echo
@@ -879,6 +948,7 @@ cmd_install_web() {
       log "管理面板已安装并开机自启（内嵌前端 + API 反代）"
       log "浏览器访问: http://<服务器IP>:${wp}  （默认账号见服务端配置）"
     else
+      systemctl status "$WEB_UNIT" --no-pager -l || true
       die "管理面板启动失败，请查看: journalctl -u ${WEB_UNIT} -xe"
     fi
   else
@@ -889,17 +959,43 @@ cmd_install_web() {
 
 cmd_update_web() {
   need_root "update-web"
-  installed_web || die "管理面板未安装，请先: sudo ng install-web"
+  if ! installed_web; then
+    die "管理面板未安装，请先: sudo ng install-web"
+  fi
   ensure_web_tools
-  local running=0
-  if systemctl is-active --quiet "$WEB_UNIT"; then running=1; systemctl stop "$WEB_UNIT"; fi
+  local was_active=0
+  if systemctl is-active --quiet "$WEB_UNIT" 2>/dev/null; then
+    was_active=1
+  fi
+  # 旧 nginx 面板也算「已安装」，迁移时会先停掉
+  if legacy_web_installed || ((was_active)); then
+    was_active=1
+  fi
+  systemctl stop "$WEB_UNIT" 2>/dev/null || true
+  migrate_legacy_web_if_needed
   install_web_bin_from_release
+  if [[ ! -f "$WEB_CFG" ]]; then
+    warn "缺少 ${WEB_CFG}，写入默认配置（可用 sudo ng config-web 修改）"
+    local def_api="$DEFAULT_API_UPSTREAM"
+    if [[ -f "$SERVER_CFG" ]]; then
+      def_api="127.0.0.1:$(toml_get "$SERVER_CFG" api_port 3000)"
+    fi
+    write_web_config_file "0.0.0.0" "$DEFAULT_WEB_PORT" "$def_api"
+  fi
+  write_web_unit
   fix_ownership
   systemctl daemon-reload
-  if ((running)); then
-    systemctl start "$WEB_UNIT"
+  systemctl enable "$WEB_UNIT" || true
+  if ((was_active)); then
+    systemctl restart "$WEB_UNIT" || systemctl start "$WEB_UNIT"
   fi
-  log "管理面板已更新到 $(cat "${WEB_DIR}/version" 2>/dev/null || echo latest)"
+  if systemctl is-active --quiet "$WEB_UNIT"; then
+    log "管理面板已更新到 $(cat "${WEB_DIR}/version" 2>/dev/null || echo latest)（p2p-admin）"
+    log "访问: http://<服务器IP>:$(toml_get "$WEB_CFG" listen_port "$DEFAULT_WEB_PORT")"
+  else
+    warn "管理面板当前未运行。启动: sudo ng start web"
+    warn "排障: journalctl -u ${WEB_UNIT} -xe"
+  fi
 }
 
 cmd_update_server() {
@@ -1249,8 +1345,14 @@ cmd_status() {
   echo
   if installed_web || unit_exists "$WEB_UNIT"; then
     echo -e "${CYAN}管理面板${NC}: $(systemctl is-active "$WEB_UNIT" 2>/dev/null || echo unknown) / $(systemctl is-enabled "$WEB_UNIT" 2>/dev/null || echo unknown)"
-    echo "  二进制: $WEB_BIN"
-    echo "  配置:   $WEB_CFG"
+    if legacy_web_installed; then
+      echo "  形态:   旧版 nginx/zip（请执行: sudo ng update-web 迁移到 p2p-admin）"
+      echo "  配置:   ${WEB_DIR}/nginx.conf"
+    else
+      echo "  形态:   p2p-admin（内嵌前端）"
+      echo "  二进制: $WEB_BIN$([ -x "$WEB_BIN" ] || echo '  [缺失]')"
+      echo "  配置:   $WEB_CFG$([ -f "$WEB_CFG" ] || echo '  [缺失]')"
+    fi
     echo "  访问:   http://0.0.0.0:$(toml_get "$WEB_CFG" listen_port "$DEFAULT_WEB_PORT")"
   else
     echo -e "${CYAN}管理面板${NC}: 未安装"
@@ -1304,17 +1406,51 @@ cmd_show_config() {
 }
 
 cmd_logs() {
-  local t
-  t="$(pick_target "${1:-server}")"
+  # 用法:
+  #   ng logs [server|client|web|all]           # 跟随 (-f)
+  #   ng logs [target] -n 50                    # 最近 N 行后退出
+  #   ng logs [target] --no-follow              # 不跟随
+  local t follow=1 lines=""
+  local args=()
+  while (($#)); do
+    case "$1" in
+      -f|--follow) follow=1; shift ;;
+      --no-follow|--no-pager) follow=0; shift ;;
+      -n|--lines)
+        lines="${2:-50}"
+        follow=0
+        shift 2
+        ;;
+      -n*)
+        lines="${1#-n}"
+        follow=0
+        shift
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  t="$(pick_target "${args[0]:-server}")"
+  local jc=(journalctl --no-pager)
+  if ((follow)); then
+    jc+=(-f)
+  fi
+  if [[ -n "$lines" ]]; then
+    jc+=(-n "$lines")
+  elif ((!follow)); then
+    jc+=(-n 100)
+  fi
   case "$t" in
-    server) journalctl -u "$SERVER_UNIT" -f --no-pager ;;
-    client) journalctl -u "$EDGE_UNIT" -f --no-pager ;;
+    server) "${jc[@]}" -u "$SERVER_UNIT" ;;
+    client) "${jc[@]}" -u "$EDGE_UNIT" ;;
     web)
       echo "systemd: journalctl -u ${WEB_UNIT}"
-      journalctl -u "$WEB_UNIT" -f --no-pager
+      "${jc[@]}" -u "$WEB_UNIT"
       ;;
     all)
-      journalctl -u "$SERVER_UNIT" -u "$EDGE_UNIT" -u "$WEB_UNIT" -f --no-pager
+      "${jc[@]}" -u "$SERVER_UNIT" -u "$EDGE_UNIT" -u "$WEB_UNIT"
       ;;
   esac
 }
@@ -1366,7 +1502,7 @@ ${BOLD}NexusGate 管理工具${NC}  (${NG_CMD_NAME})
   stop    [server|client|web|all]    停止
   restart [server|client|web|all]    重启
   status                             查看状态
-  logs    [server|client|web|all]    跟踪日志
+  logs    [server|client|web|all] [-n N|--no-follow]  查看日志（默认跟随）
 
 配置:
   config-server           逐项交互配置服务端（可选重启）
