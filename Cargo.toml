@@ -7,6 +7,7 @@ members = [
     "shared/transport",
     "shared/dataplane",
     "shared/p2p",
+    "shared/overlay",
     "shared/router",
     "shared/security",
     "shared/metrics",
@@ -68,6 +69,7 @@ p2p-control = { path = "shared/control" }
 p2p-transport = { path = "shared/transport" }
 p2p-dataplane = { path = "shared/dataplane" }
 p2p-p2p = { path = "shared/p2p" }
+p2p-overlay = { path = "shared/overlay" }
 p2p-router = { path = "shared/router" }
 p2p-security = { path = "shared/security" }
 p2p-metrics = { path = "shared/metrics" }

@@ -27,6 +27,7 @@ p2p-dataplane = { workspace = true }
 p2p-p2p = { workspace = true }
 p2p-protocol = { workspace = true }
 p2p-security = { workspace = true }
+p2p-overlay = { workspace = true }
 reqwest = { workspace = true }
 rust-embed = { version = "8", features = ["mime-guess"] }
 serde = { workspace = true }

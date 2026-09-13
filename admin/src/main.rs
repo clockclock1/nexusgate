@@ -21,6 +21,8 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub registry: ServerRegistry,
     pub hub: Option<HubState>,
+    /// Internal management mesh (preferred path for panel → server API).
+    pub mesh: Option<p2p_overlay::OverlayMesh>,
 }
 
 #[derive(Parser, Debug)]
@@ -72,12 +74,37 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Internal management mesh (equal peer with p2p-server).
+    let mesh = if cfg.overlay.enabled {
+        let mut o = cfg.overlay.clone();
+        o.role = p2p_overlay::OverlayRole::Server;
+        if o.node_id.trim().is_empty() {
+            o.node_id = "admin".into();
+        }
+        if o.fixed_vip.is_none() {
+            o.fixed_vip = Some("10.88.0.1".into());
+        }
+        match p2p_overlay::start_overlay(o).await {
+            Ok(m) => {
+                tracing::info!(vip = %m.vip(), "management mesh ready (admin)");
+                Some(m)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "management mesh failed; Hub/HTTP fallback");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = AppState {
         http: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()?,
         registry: ServerRegistry::new(cfg, std::path::PathBuf::from(&args.config)),
         hub,
+        mesh,
     };
 
     tracing::info!(

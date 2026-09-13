@@ -16,6 +16,7 @@ p2p-transport = { workspace = true }
 p2p-dataplane = { workspace = true }
 p2p-p2p = { workspace = true }
 p2p-security = { workspace = true }
+p2p-overlay = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 serde = { workspace = true }

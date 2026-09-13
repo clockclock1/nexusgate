@@ -125,14 +125,13 @@ pub async fn server_info(State(state): State<AppState>) -> Json<Value> {
         "memory": 0.0,
         "listen_addr": cfg.listen,
         "ports": [
-            { "name": "control", "port": cfg.control_port, "protocol": "tcp", "status": "listening" },
-            { "name": "data", "port": cfg.data_port, "protocol": "tcp", "status": "listening" },
-            { "name": "data_quic", "port": cfg.data_quic_port, "protocol": "udp", "status": "listening" },
-            { "name": "data_kcp", "port": cfg.data_kcp_port, "protocol": "udp", "status": "listening" },
-            { "name": "gateway", "port": cfg.gateway_port, "protocol": "tcp", "status": "listening" },
-            { "name": "api", "port": cfg.api_port, "protocol": "tcp", "status": "listening" },
-            { "name": "data_transport", "value": cfg.data_transport.as_str(), "status": "preferred" },
+            { "name": "gateway_tcp", "port": cfg.gateway_port, "protocol": "tcp", "status": "listening" },
+            { "name": "gateway_quic", "port": cfg.gateway_quic_port, "protocol": "udp", "status": "listening" },
+            { "name": "gateway_kcp", "port": cfg.gateway_kcp_port, "protocol": "udp", "status": "listening" },
+            { "name": "api_localhost", "port": cfg.api_port, "protocol": "tcp", "status": "localhost" },
+            { "name": "hub_control", "port": cfg.hub_control_port, "protocol": "tcp", "status": "outbound" },
         ],
+        "hub_host": cfg.hub_host,
         "node_count": state.online.len(),
         "connection_count": state.connections.len(),
         "hostname": hostname(),
@@ -150,9 +149,12 @@ pub async fn server_config(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "listen_addr": cfg.listen,
         "api_port": cfg.api_port,
-        "control_port": cfg.control_port,
-        "data_port": cfg.data_port,
         "gateway_port": cfg.gateway_port,
+        "gateway_quic_port": cfg.gateway_quic_port,
+        "gateway_kcp_port": cfg.gateway_kcp_port,
+        "hub_host": cfg.hub_host,
+        "hub_control_port": cfg.hub_control_port,
+        "hub_data_port": cfg.hub_data_port,
         "max_connections": cfg.max_connections,
         "jwt_ttl_secs": cfg.jwt_ttl_secs,
         "enable_relay": cfg.enable_relay,
@@ -166,9 +168,12 @@ pub async fn server_config(State(state): State<AppState>) -> Json<Value> {
 pub struct ServerConfigUpdate {
     pub listen_addr: Option<String>,
     pub api_port: Option<u16>,
-    pub control_port: Option<u16>,
-    pub data_port: Option<u16>,
     pub gateway_port: Option<u16>,
+    pub gateway_quic_port: Option<u16>,
+    pub gateway_kcp_port: Option<u16>,
+    pub hub_host: Option<String>,
+    pub hub_control_port: Option<u16>,
+    pub hub_data_port: Option<u16>,
     pub max_connections: Option<u64>,
     pub jwt_ttl_secs: Option<i64>,
     pub enable_relay: Option<bool>,
@@ -189,14 +194,23 @@ pub async fn update_server_config(
         if let Some(v) = req.api_port {
             cfg.api_port = v;
         }
-        if let Some(v) = req.control_port {
-            cfg.control_port = v;
-        }
-        if let Some(v) = req.data_port {
-            cfg.data_port = v;
-        }
         if let Some(v) = req.gateway_port {
             cfg.gateway_port = v;
+        }
+        if let Some(v) = req.gateway_quic_port {
+            cfg.gateway_quic_port = v;
+        }
+        if let Some(v) = req.gateway_kcp_port {
+            cfg.gateway_kcp_port = v;
+        }
+        if let Some(v) = req.hub_host {
+            cfg.hub_host = if v.trim().is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = req.hub_control_port {
+            cfg.hub_control_port = v;
+        }
+        if let Some(v) = req.hub_data_port {
+            cfg.hub_data_port = v;
         }
         if let Some(v) = req.max_connections {
             cfg.max_connections = v;
@@ -249,7 +263,7 @@ pub async fn list_nodes(State(state): State<AppState>) -> Result<Json<Value>, Ap
         .into_iter()
         .map(|r| {
             let id: String = r.get("node_id");
-            let online = state.online.contains_key(&id);
+            let online = state.edge_online_via_hub(&id);
             let (cpu, memory, uptime, conns, version, public_ip, nat) = if let Some(n) = state.online.get(&id)
             {
                 (
@@ -715,9 +729,12 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<Value> {
         "server": {
             "listen_addr": cfg.listen,
             "api_port": cfg.api_port,
-            "control_port": cfg.control_port,
-            "data_port": cfg.data_port,
             "gateway_port": cfg.gateway_port,
+            "gateway_quic_port": cfg.gateway_quic_port,
+            "gateway_kcp_port": cfg.gateway_kcp_port,
+            "hub_host": cfg.hub_host,
+            "hub_control_port": cfg.hub_control_port,
+            "hub_data_port": cfg.hub_data_port,
             "config_path": state.config_path.display().to_string(),
         },
         "security": {
@@ -734,6 +751,7 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<Value> {
         "notes": {
             "ports_need_restart": true,
             "admin_seed": "admin_user/admin_password 仅在首次空库时用于种子账号，请用「用户管理」改密码",
+            "architecture": "控制面走 Admin Hub；本机只开放穿透映射口；API 仅 localhost",
         }
     }))
 }
@@ -751,11 +769,27 @@ pub async fn update_settings(
             if let Some(p) = server.get("api_port").and_then(|x| x.as_u64()) {
                 cfg.api_port = p as u16;
             }
-            if let Some(p) = server.get("control_port").and_then(|x| x.as_u64()) {
-                cfg.control_port = p as u16;
+            if let Some(p) = server.get("gateway_port").and_then(|x| x.as_u64()) {
+                cfg.gateway_port = p as u16;
             }
-            if let Some(p) = server.get("data_port").and_then(|x| x.as_u64()) {
-                cfg.data_port = p as u16;
+            if let Some(p) = server.get("gateway_quic_port").and_then(|x| x.as_u64()) {
+                cfg.gateway_quic_port = p as u16;
+            }
+            if let Some(p) = server.get("gateway_kcp_port").and_then(|x| x.as_u64()) {
+                cfg.gateway_kcp_port = p as u16;
+            }
+            if let Some(s) = server.get("hub_host").and_then(|x| x.as_str()) {
+                cfg.hub_host = if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                };
+            }
+            if let Some(p) = server.get("hub_control_port").and_then(|x| x.as_u64()) {
+                cfg.hub_control_port = p as u16;
+            }
+            if let Some(p) = server.get("hub_data_port").and_then(|x| x.as_u64()) {
+                cfg.hub_data_port = p as u16;
             }
             if let Some(p) = server.get("gateway_port").and_then(|x| x.as_u64()) {
                 cfg.gateway_port = p as u16;

@@ -26,20 +26,13 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
     let mut session = ControlSession::new(stream, HeartbeatConfig::default());
 
     // HELLO
-    let cfg = state.config.read().clone();
-    let mut features = vec!["tcp".into(), "relay".into(), "p2p".into()];
-    for t in cfg.enabled_data_transports() {
-        let s = t.as_str().to_string();
-        if !features.contains(&s) {
-            features.push(s);
-        }
-    }
     session
         .send(ControlMessage::Hello {
             version: env!("CARGO_PKG_VERSION").into(),
-            features,
+            features: vec!["tcp".into(), "relay".into(), "p2p".into(), "hub".into()],
         })
         .await?;
+    let _ = state.config.read().clone();
 
     // Expect AUTH
     let auth = session
@@ -217,49 +210,25 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
     Ok(())
 }
 
-/// Send CONNECT to an online edge node.
+/// Legacy helper — tunnel setup now goes through Admin Hub (`OpenPeerPath`).
 pub async fn send_connect(
     state: &AppState,
     node_id: &str,
-    connection_id: &str,
-    data_token: &str,
+    _connection_id: &str,
+    _data_token: &str,
     local_addr: &str,
-    protocol: p2p_common::ProtocolKind,
+    _protocol: p2p_common::ProtocolKind,
 ) -> anyhow::Result<()> {
-    let cfg = state.config.read().clone();
-    let preferred = cfg.data_transport;
-    let edge_caps = state
-        .online
-        .get(node_id)
-        .map(|n| n.transports.clone())
-        .unwrap_or_else(|| vec![p2p_common::TransportKind::Tcp]);
-    let transport = if edge_caps.contains(&preferred) {
-        preferred
-    } else if edge_caps.contains(&p2p_common::TransportKind::Tcp) {
-        p2p_common::TransportKind::Tcp
-    } else {
-        edge_caps
-            .first()
-            .copied()
-            .unwrap_or(p2p_common::TransportKind::Tcp)
-    };
-    let data_port = cfg.port_for_transport(transport);
-
-    let Some(node) = state.online.get(node_id) else {
-        anyhow::bail!("node offline: {node_id}");
-    };
-    node.tx
-        .send(ControlMessage::Connect {
-            connection_id: connection_id.into(),
-            data_token: data_token.into(),
-            local_addr: local_addr.into(),
-            protocol,
-            path: p2p_common::PathKind::Relay,
-            service_id: None,
-            transport,
-            data_port: Some(data_port),
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("control send failed"))?;
+    if !state.edge_online_via_hub(node_id) {
+        anyhow::bail!("node offline on hub: {node_id}");
+    }
+    let request_id = uuid::Uuid::new_v4().to_string();
+    state.hub_send(ControlMessage::OpenPeerPath {
+        request_id,
+        target_id: node_id.into(),
+        purpose: p2p_common::PeerPathPurpose::Data,
+        prefer_p2p: true,
+        local_addr: Some(local_addr.into()),
+    })?;
     Ok(())
 }

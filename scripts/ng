@@ -452,8 +452,17 @@ EOF
 
 write_web_config_file() {
   local listen="$1" listen_port="$2" api_upstream="$3"
+  local hub_token="${4:-change-me-hub-token}"
+  local overlay_block="${5:-}"
+  listen="$(toml_escape "$listen")"
+  api_upstream="$(toml_escape "$api_upstream")"
+  hub_token="$(toml_escape "$hub_token")"
   mkdir -p "$WEB_CFG_DIR"
+  if [[ -z "$overlay_block" ]]; then
+    overlay_block="$(overlay_toml_block server admin "10.88.0.1" "" 51820 "change-me-overlay-token" "10.88.0.0/16" false)"
+  fi
   cat >"$WEB_CFG" <<EOF
+# NexusGate Admin Panel + Hub + Overlay Server
 listen = "${listen}"
 listen_port = ${listen_port}
 api_upstream = "${api_upstream}"
@@ -463,8 +472,8 @@ hub_enabled = true
 hub_listen = "0.0.0.0"
 hub_control_port = 7100
 hub_data_port = 7101
-hub_token = "change-me-hub-token"
-
+hub_token = "${hub_token}"
+${overlay_block}
 [[servers]]
 id = "default"
 name = "默认服务端"
@@ -506,7 +515,7 @@ configure_web_interactive() {
   echo "  提示: 安装后可在面板「服务端节点」继续添加多个 Super Node"
   echo
 
-  local listen listen_port api_upstream def_api
+  local listen listen_port api_upstream def_api hub_token
   def_api="$DEFAULT_API_UPSTREAM"
   if [[ -f "$SERVER_CFG" ]]; then
     local ap
@@ -516,12 +525,22 @@ configure_web_interactive() {
   listen="$(ask_input "监听地址 listen" "$(toml_get "$WEB_CFG" listen "0.0.0.0")" 1)"
   listen_port="$(ask_input "面板端口 listen_port" "$(toml_get "$WEB_CFG" listen_port "$DEFAULT_WEB_PORT")" 1)"
   api_upstream="$(ask_input "API 反代地址 api_upstream (host:port)" "$(toml_get "$WEB_CFG" api_upstream "$def_api")" 1)"
+  hub_token="$(ask_input "hub_token" "$(toml_get "$WEB_CFG" hub_token "change-me-hub-token")" 1)"
 
-  write_web_config_file "$listen" "$listen_port" "$api_upstream"
+  local OV_ENABLED=0 OV_BLOCK=""
+  ask_overlay_common "$WEB_CFG" server admin "10.88.0.1" ""
+  if [[ "$OV_ENABLED" -eq 0 ]]; then
+    OV_BLOCK=$'\n[overlay]\nenabled = false\n'
+  fi
+
+  write_web_config_file "$listen" "$listen_port" "$api_upstream" "$hub_token" "$OV_BLOCK"
   echo
   log "管理面板配置已保存: ${WEB_CFG}"
   echo -e "  访问地址: http://${listen}:${listen_port}"
   echo -e "  API 上游: ${api_upstream}"
+  if [[ "$OV_ENABLED" -eq 1 ]]; then
+    echo -e "  Overlay Server VIP: ${OV_FIXED_VIP:-auto}  port: ${OV_PORT}"
+  fi
 }
 
 install_web_bin_from_release() {
@@ -587,6 +606,105 @@ toml_get() {
   printf '%s' "${val:-$def}"
 }
 
+# Read key from a [section] table (stops at next [ or [[)
+toml_get_section() {
+  local file="$1" section="$2" key="$3" def="${4:-}"
+  local in=0 line val
+  [[ -f "$file" ]] || { printf '%s' "$def"; return 0; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^\[\[ ]]; then
+      in=0
+      continue
+    fi
+    if [[ "$line" =~ ^\[([^]]+)\] ]]; then
+      if [[ "${BASH_REMATCH[1]}" == "$section" ]]; then
+        in=1
+      else
+        in=0
+      fi
+      continue
+    fi
+    ((in)) || continue
+    if [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*= ]]; then
+      val="${line#*=}"
+      val="${val#"${val%%[![:space:]]*}"}"
+      val="${val%"${val##*[![:space:]]}"}"
+      if [[ "$val" == \"*\" && "$val" == *\" ]]; then
+        val="${val:1:$((${#val} - 2))}"
+      fi
+      # strip trailing comments
+      val="${val%%#*}"
+      val="${val%"${val##*[![:space:]]}"}"
+      printf '%s' "${val:-$def}"
+      return 0
+    fi
+  done <"$file"
+  printf '%s' "$def"
+}
+
+# Build [overlay] TOML block. Args: role node_id fixed_vip_or_empty bootstrap_host port token subnet create_tun
+overlay_toml_block() {
+  local role="$1" node_id="$2" fixed_vip="${3:-}" bootstrap_host="${4:-}" port="${5:-51820}"
+  local token="${6:-change-me-overlay-token}" subnet="${7:-10.88.0.0/16}" create_tun="${8:-false}"
+  local bootstrap_line=""
+  if [[ -n "$bootstrap_host" ]]; then
+    bootstrap_line="bootstrap = [\"$(toml_escape "${bootstrap_host}:${port}")\"]"
+  else
+    bootstrap_line="bootstrap = []"
+  fi
+  local fixed_line=""
+  if [[ -n "$fixed_vip" ]]; then
+    fixed_line="fixed_vip = \"$(toml_escape "$fixed_vip")\""
+  fi
+  cat <<EOF
+
+# 虚拟网 Overlay（管理面；与穿透无关）
+[overlay]
+enabled = true
+port = ${port}
+listen = "0.0.0.0"
+subnet_cidr = "$(toml_escape "$subnet")"
+dhcp_start = "10.88.0.10"
+dhcp_end = "10.88.0.250"
+token = "$(toml_escape "$token")"
+role = "$(toml_escape "$role")"
+node_id = "$(toml_escape "$node_id")"
+${fixed_line}
+${bootstrap_line}
+create_tun = ${create_tun}
+EOF
+}
+
+# Interactive overlay prompts → prints: role|node_id|fixed_vip|bootstrap_host|port|token|subnet|create_tun via globals
+ask_overlay_common() {
+  # $1 = config file, $2 = default role, $3 = default node_id, $4 = default fixed_vip ("" for node), $5 = default bootstrap host
+  local cfg="$1" def_role="$2" def_nid="$3" def_vip="${4:-}" def_boot="${5:-}"
+  local en
+  echo
+  echo -e "${BOLD}虚拟网 Overlay（管理面 VIP / 打洞；与访客穿透无关）${NC}"
+  if ask_yn "启用 overlay" "Y"; then
+    OV_ENABLED=1
+  else
+    OV_ENABLED=0
+    OV_BLOCK=""
+    return 0
+  fi
+  OV_PORT="$(ask_input "overlay.port" "$(toml_get_section "$cfg" overlay port 51820)" 1)"
+  OV_SUBNET="$(ask_input "overlay.subnet_cidr" "$(toml_get_section "$cfg" overlay subnet_cidr "10.88.0.0/16")" 1)"
+  OV_TOKEN="$(ask_input "overlay.token（三端一致）" "$(toml_get_section "$cfg" overlay token "change-me-overlay-token")" 1)"
+  OV_NODE_ID="$(ask_input "overlay.node_id" "$(toml_get_section "$cfg" overlay node_id "$def_nid")" 1)"
+  OV_FIXED_VIP=""
+  if [[ "$def_role" == "server" ]]; then
+    OV_FIXED_VIP="$(ask_input "overlay.fixed_vip" "$(toml_get_section "$cfg" overlay fixed_vip "$def_vip")" 1)"
+  fi
+  OV_BOOT="$(ask_input "对等/引导 Overlay 主机（host，空=不填 bootstrap）" "$def_boot" 1)"
+  OV_CREATE_TUN=false
+  if ask_yn "创建系统 TUN 网卡 create_tun（需 CAP_NET_ADMIN）" "N"; then
+    OV_CREATE_TUN=true
+  fi
+  OV_BLOCK="$(overlay_toml_block "$def_role" "$OV_NODE_ID" "$OV_FIXED_VIP" "$OV_BOOT" "$OV_PORT" "$OV_TOKEN" "$OV_SUBNET" "$OV_CREATE_TUN")"
+}
+
 rand_secret() {
   if have_cmd openssl; then
     openssl rand -hex 16
@@ -606,26 +724,22 @@ toml_escape() {
 }
 
 write_server_config_file() {
-  local listen="$1" control_port="$2" data_port="$3" gateway_port="$4" api_port="$5"
+  local listen="$1" gateway_port="$2" gateway_quic_port="$3" gateway_kcp_port="$4" api_port="$5"
   local database_url="$6" jwt_secret="$7" jwt_ttl="$8" admin_user="$9" admin_password="${10}"
   local max_connections="${11}" enable_relay="${12}" enable_p2p="${13}"
   local hub_block="${14:-}"
-  local data_quic_port="${15:-7002}" data_kcp_port="${16:-7003}" data_transport="${17:-tcp}"
+  local overlay_block="${15:-}"
   listen="$(toml_escape "$listen")"
   database_url="$(toml_escape "$database_url")"
   jwt_secret="$(toml_escape "$jwt_secret")"
   admin_user="$(toml_escape "$admin_user")"
   admin_password="$(toml_escape "$admin_password")"
-  data_transport="$(toml_escape "$data_transport")"
   cat >"$SERVER_CFG" <<EOF
 listen = "${listen}"
-control_port = ${control_port}
-data_port = ${data_port}
-data_quic_port = ${data_quic_port}
-data_kcp_port = ${data_kcp_port}
-data_transport = "${data_transport}"
-data_transports = ["quic", "kcp"]
 gateway_port = ${gateway_port}
+gateway_quic_port = ${gateway_quic_port}
+gateway_kcp_port = ${gateway_kcp_port}
+gateway_transports = ["tcp", "quic", "kcp"]
 api_port = ${api_port}
 database_url = "${database_url}"
 jwt_secret = "${jwt_secret}"
@@ -636,6 +750,7 @@ max_connections = ${max_connections}
 enable_relay = ${enable_relay}
 enable_p2p = ${enable_p2p}
 ${hub_block}
+${overlay_block}
 EOF
 }
 
@@ -643,25 +758,21 @@ configure_server_interactive() {
   ensure_dirs
   echo
   echo -e "${BOLD}======== 服务端配置向导 ========${NC}"
-  echo "  提示: 日常运维请优先使用管理面板「系统设置 / 服务端」页面"
-  echo "  请逐项确认（直接回车 = 使用方括号内默认值）"
+  echo "  只开放穿透映射口；管控出站连接管理端 Hub（必填）"
   echo "  配置文件将写入: ${SERVER_CFG}"
   echo
 
-  local listen control_port data_port data_quic_port data_kcp_port data_transport gateway_port api_port
+  local listen gateway_port gateway_quic_port gateway_kcp_port api_port
   local database_url jwt_secret jwt_ttl admin_user admin_password
   local max_connections enable_relay enable_p2p
   local def_relay=Y def_p2p=Y
   local cur
 
   listen="$(ask_input "监听地址 listen" "$(toml_get "$SERVER_CFG" listen "0.0.0.0")" 1)"
-  control_port="$(ask_input "控制面端口 control_port" "$(toml_get "$SERVER_CFG" control_port 7000)" 1)"
-  data_port="$(ask_input "数据面 TCP 端口 data_port" "$(toml_get "$SERVER_CFG" data_port 7001)" 1)"
-  data_quic_port="$(ask_input "数据面 QUIC 端口 data_quic_port" "$(toml_get "$SERVER_CFG" data_quic_port 7002)" 1)"
-  data_kcp_port="$(ask_input "数据面 KCP 端口 data_kcp_port" "$(toml_get "$SERVER_CFG" data_kcp_port 7003)" 1)"
-  data_transport="$(ask_input "首选数据面 data_transport (tcp|quic|kcp)" "$(toml_get "$SERVER_CFG" data_transport "tcp")" 1)"
-  gateway_port="$(ask_input "网关端口 gateway_port" "$(toml_get "$SERVER_CFG" gateway_port 8080)" 1)"
-  api_port="$(ask_input "管理 API 端口 api_port" "$(toml_get "$SERVER_CFG" api_port 3000)" 1)"
+  gateway_port="$(ask_input "穿透 TCP 端口 gateway_port" "$(toml_get "$SERVER_CFG" gateway_port 8080)" 1)"
+  gateway_quic_port="$(ask_input "穿透 QUIC 端口 gateway_quic_port" "$(toml_get "$SERVER_CFG" gateway_quic_port 8443)" 1)"
+  gateway_kcp_port="$(ask_input "穿透 KCP 端口 gateway_kcp_port" "$(toml_get "$SERVER_CFG" gateway_kcp_port 8444)" 1)"
+  api_port="$(ask_input "本机 API 端口 api_port（仅 127.0.0.1）" "$(toml_get "$SERVER_CFG" api_port 3000)" 1)"
   database_url="$(ask_input "数据库 URL database_url" "$(toml_get "$SERVER_CFG" database_url "sqlite:///opt/nexusgate/data/p2p.db")" 1)"
   jwt_secret="$(ask_input "JWT 密钥 jwt_secret" "$(toml_get "$SERVER_CFG" jwt_secret "$(rand_secret)")" 1)"
   jwt_ttl="$(ask_input "JWT 有效期秒数 jwt_ttl_secs" "$(toml_get "$SERVER_CFG" jwt_ttl_secs 86400)" 1)"
@@ -687,54 +798,61 @@ configure_server_interactive() {
 
   local hub_host hub_token hub_control_port hub_data_port hub_server_id hub_block=""
   echo
-  echo -e "${BOLD}Admin Hub（可选；服务端 dial 进 p2p-admin）${NC}"
-  hub_host="$(ask_input "hub_host（空=不启用）" "$(toml_get "$SERVER_CFG" hub_host "")" 1)"
-  if [[ -n "$hub_host" ]]; then
-    hub_control_port="$(ask_input "hub_control_port" "$(toml_get "$SERVER_CFG" hub_control_port 7100)" 1)"
-    hub_data_port="$(ask_input "hub_data_port" "$(toml_get "$SERVER_CFG" hub_data_port 7101)" 1)"
-    hub_token="$(ask_input "hub_token" "$(toml_get "$SERVER_CFG" hub_token "change-me-hub-token")" 1)"
-    hub_server_id="$(ask_input "hub_server_id" "$(toml_get "$SERVER_CFG" hub_server_id "default")" 1)"
-    hub_block="
+  echo -e "${BOLD}Admin Hub（必填；服务端出站 dial 进 p2p-admin 控制面）${NC}"
+  hub_host="$(ask_input "hub_host" "$(toml_get "$SERVER_CFG" hub_host "127.0.0.1")" 1)"
+  hub_control_port="$(ask_input "hub_control_port（管理端控制面）" "$(toml_get "$SERVER_CFG" hub_control_port 7100)" 1)"
+  hub_data_port="$(ask_input "hub_data_port（隧道中转）" "$(toml_get "$SERVER_CFG" hub_data_port 7101)" 1)"
+  hub_token="$(ask_input "hub_token" "$(toml_get "$SERVER_CFG" hub_token "change-me-hub-token")" 1)"
+  hub_server_id="$(ask_input "hub_server_id" "$(toml_get "$SERVER_CFG" hub_server_id "default")" 1)"
+  hub_block="
 hub_host = \"$(toml_escape "$hub_host")\"
 hub_control_port = ${hub_control_port}
 hub_data_port = ${hub_data_port}
 hub_token = \"$(toml_escape "$hub_token")\"
 hub_server_id = \"$(toml_escape "$hub_server_id")\"
 "
+
+  local OV_ENABLED=0 OV_BLOCK=""
+  ask_overlay_common "$SERVER_CFG" server "$hub_server_id" "10.88.0.2" "$hub_host"
+  if [[ "$OV_ENABLED" -eq 0 ]]; then
+    OV_BLOCK=$'\n[overlay]\nenabled = false\n'
   fi
 
   write_server_config_file \
-    "$listen" "$control_port" "$data_port" "$gateway_port" "$api_port" \
+    "$listen" "$gateway_port" "$gateway_quic_port" "$gateway_kcp_port" "$api_port" \
     "$database_url" "$jwt_secret" "$jwt_ttl" "$admin_user" "$admin_password" \
-    "$max_connections" "$enable_relay" "$enable_p2p" "$hub_block" \
-    "$data_quic_port" "$data_kcp_port" "$data_transport"
+    "$max_connections" "$enable_relay" "$enable_p2p" "$hub_block" "$OV_BLOCK"
 
   echo
   log "服务端配置已保存: ${SERVER_CFG}"
-  echo -e "  API: http://${listen}:${api_port}  Gateway: :${gateway_port}"
-  echo -e "  Control: :${control_port}  Data TCP: :${data_port}  QUIC: :${data_quic_port}  KCP: :${data_kcp_port}"
-  echo -e "  data_transport: ${data_transport}"
+  echo -e "  穿透 TCP: :${gateway_port}  QUIC: :${gateway_quic_port}  KCP: :${gateway_kcp_port}"
+  echo -e "  API(本机): 127.0.0.1:${api_port}"
+  echo -e "  Hub: ${hub_host}:${hub_control_port} (出站)"
+  if [[ "$OV_ENABLED" -eq 1 ]]; then
+    echo -e "  Overlay Server VIP: ${OV_FIXED_VIP:-auto} → bootstrap ${OV_BOOT:-none}:${OV_PORT:-51820}"
+  fi
   echo -e "  管理员: ${admin_user} / ${admin_password}"
 }
 
 write_client_config_file() {
-  local node_id="$1" token="$2" server="$3" control_port="$4" data_port="$5" name="$6"
-  local services_block="$7"
-  local data_quic_port="${8:-7002}" data_kcp_port="${9:-7003}"
+  local node_id="$1" token="$2" name="$3"
+  local services_block="$4"
+  local hub_host="$5" hub_control_port="$6" hub_data_port="$7" hub_token="$8"
+  local overlay_block="${9:-}"
   node_id="$(toml_escape "$node_id")"
   token="$(toml_escape "$token")"
-  server="$(toml_escape "$server")"
   name="$(toml_escape "$name")"
+  hub_host="$(toml_escape "$hub_host")"
+  hub_token="$(toml_escape "$hub_token")"
   cat >"$CLIENT_CFG" <<EOF
 node_id = "${node_id}"
 token = "${token}"
-server = "${server}"
-control_port = ${control_port}
-data_port = ${data_port}
-data_quic_port = ${data_quic_port}
-data_kcp_port = ${data_kcp_port}
-transports = ["tcp", "quic", "kcp"]
 name = "${name}"
+hub_host = "${hub_host}"
+hub_control_port = ${hub_control_port}
+hub_data_port = ${hub_data_port}
+hub_token = "${hub_token}"
+${overlay_block}
 ${services_block}
 EOF
 }
@@ -743,41 +861,33 @@ configure_client_interactive() {
   ensure_dirs
   echo
   echo -e "${BOLD}======== 客户端配置向导 ========${NC}"
-  echo "  请逐项确认（直接回车 = 使用方括号内默认值）"
+  echo "  控制面 = 管理端 Hub（必填）；不开公网端口"
   echo "  配置文件将写入: ${CLIENT_CFG}"
   echo "  node_id / token 请在管理面板创建节点后获取"
   echo
 
-  local node_id token server control_port data_port data_quic_port data_kcp_port name
+  local node_id token name
   local sid sname proto laddr services_block="" n=0
 
   node_id="$(ask_input "节点 ID node_id" "$(toml_get "$CLIENT_CFG" node_id "edge-demo")" 1)"
   token="$(ask_input "节点 Token token" "$(toml_get "$CLIENT_CFG" token "")" 1)"
-  server="$(ask_input "服务端地址 server" "$(toml_get "$CLIENT_CFG" server "127.0.0.1")" 1)"
-  control_port="$(ask_input "控制面端口 control_port" "$(toml_get "$CLIENT_CFG" control_port 7000)" 1)"
-  data_port="$(ask_input "数据面 TCP 端口 data_port" "$(toml_get "$CLIENT_CFG" data_port 7001)" 1)"
-  data_quic_port="$(ask_input "数据面 QUIC 端口 data_quic_port" "$(toml_get "$CLIENT_CFG" data_quic_port 7002)" 1)"
-  data_kcp_port="$(ask_input "数据面 KCP 端口 data_kcp_port" "$(toml_get "$CLIENT_CFG" data_kcp_port 7003)" 1)"
   name="$(ask_input "节点显示名 name" "$(toml_get "$CLIENT_CFG" name "demo-edge")" 1)"
 
-  local hub_host hub_token hub_control_port hub_data_port hub_block=""
+  local hub_host hub_token hub_control_port hub_data_port
   echo
-  echo -e "${BOLD}Admin Hub（可选；连面板 Hub 做多服务端发现）${NC}"
-  echo "  注意: hub_* 必须写在 [[services]] 之前，否则会被 TOML 吞进 service 表"
-  hub_host="$(ask_input "hub_host（空=不启用）" "$(toml_get "$CLIENT_CFG" hub_host "")" 1)"
-  if [[ -n "$hub_host" ]]; then
-    hub_control_port="$(ask_input "hub_control_port" "$(toml_get "$CLIENT_CFG" hub_control_port 7100)" 1)"
-    hub_data_port="$(ask_input "hub_data_port" "$(toml_get "$CLIENT_CFG" hub_data_port 7101)" 1)"
-    hub_token="$(ask_input "hub_token（空则回退用节点 token）" "$(toml_get "$CLIENT_CFG" hub_token "")" 1)"
-    hub_block="
-hub_host = \"$(toml_escape "$hub_host")\"
-hub_control_port = ${hub_control_port}
-hub_data_port = ${hub_data_port}
-"
-    if [[ -n "$hub_token" ]]; then
-      hub_block+="hub_token = \"$(toml_escape "$hub_token")\"
-"
-    fi
+  echo -e "${BOLD}Admin Hub（必填）${NC}"
+  hub_host="$(ask_input "hub_host" "$(toml_get "$CLIENT_CFG" hub_host "127.0.0.1")" 1)"
+  hub_control_port="$(ask_input "hub_control_port" "$(toml_get "$CLIENT_CFG" hub_control_port 7100)" 1)"
+  hub_data_port="$(ask_input "hub_data_port" "$(toml_get "$CLIENT_CFG" hub_data_port 7101)" 1)"
+  hub_token="$(ask_input "hub_token（空则回退用节点 token）" "$(toml_get "$CLIENT_CFG" hub_token "")" 1)"
+  if [[ -z "$hub_token" ]]; then
+    hub_token="$token"
+  fi
+
+  local OV_ENABLED=0 OV_BLOCK=""
+  ask_overlay_common "$CLIENT_CFG" node "$node_id" "" "$hub_host"
+  if [[ "$OV_ENABLED" -eq 0 ]]; then
+    OV_BLOCK=$'\n[overlay]\nenabled = false\n'
   fi
 
   echo
@@ -792,6 +902,7 @@ hub_data_port = ${hub_data_port}
       laddr="$(ask_input "local_addr (本机回源)" "127.0.0.1:8000" 1)"
     else
       sid="$(ask_input "service_id" "" 1)"
+      [[ -z "$sid" ]] && break
       sname="$(ask_input "name" "$sid" 1)"
       proto="$(ask_input "protocol" "tcp" 1)"
       laddr="$(ask_input "local_addr (本机回源)" "" 1)"
@@ -809,17 +920,19 @@ local_addr = \"$(toml_escape "$laddr")\"
     break
   done
 
-  # hub_block 必须在 services 之前写入
-  write_client_config_file "$node_id" "$token" "$server" "$control_port" "$data_port" "$name" "${hub_block}${services_block}" \
-    "$data_quic_port" "$data_kcp_port"
+  write_client_config_file "$node_id" "$token" "$name" "$services_block" \
+    "$hub_host" "$hub_control_port" "$hub_data_port" "$hub_token" "$OV_BLOCK"
 
   echo
   log "客户端配置已保存: ${CLIENT_CFG}"
-  echo -e "  节点: ${node_id} @ ${server}:${control_port}"
-  echo -e "  Data TCP: :${data_port}  QUIC: :${data_quic_port}  KCP: :${data_kcp_port}"
+  echo -e "  节点: ${node_id}"
+  echo -e "  Hub: ${hub_host}:${hub_control_port}"
+  if [[ "$OV_ENABLED" -eq 1 ]]; then
+    echo -e "  Overlay Node → bootstrap ${OV_BOOT:-none}:${OV_PORT:-51820}"
+  fi
   echo -e "  已配置 ${n} 个本地服务"
   if [[ "$token" == "REPLACE_WITH_TOKEN_FROM_ADMIN" || -z "$token" ]]; then
-    warn "token 仍为占位/空，连接服务端前请到管理面板创建节点并填入真实 token"
+    warn "token 仍为占位/空，请到管理面板创建节点并填入真实 token"
   fi
 }
 

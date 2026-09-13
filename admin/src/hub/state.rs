@@ -100,6 +100,7 @@ impl HubState {
         request_id: &str,
         purpose: PeerPathPurpose,
         prefer_p2p: bool,
+        local_addr: Option<String>,
     ) -> anyhow::Result<()> {
         if !self.peers.contains_key(from_id) {
             anyhow::bail!("source peer offline");
@@ -147,6 +148,7 @@ impl HubState {
             path,
             purpose,
             candidates: vec![],
+            local_addr: local_addr.clone(),
         };
         let offer_b = ControlMessage::PeerPathOffer {
             request_id: request_id.to_string(),
@@ -156,6 +158,7 @@ impl HubState {
             path,
             purpose,
             candidates: vec![],
+            local_addr,
         };
         if !self.send_to(from_id, offer_a) {
             anyhow::bail!("failed to notify source");

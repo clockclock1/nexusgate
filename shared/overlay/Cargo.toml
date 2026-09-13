@@ -1,0 +1,31 @@
+[package]
+name = "p2p-overlay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Virtual NIC overlay for management mesh (TUN + DHCP + UDP P2P/relay)"
+
+[dependencies]
+p2p-common = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+socket2 = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+base64 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# Real TUN on Linux/macOS. Windows uses userspace path until wintun is bundled.
+tun = { version = "0.6", features = ["async"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

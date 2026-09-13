@@ -1,6 +1,6 @@
 # NexusGate Admin Panel + Hub
 # listen / listen_port: Web 面板
-# hub_*: P2P/中转管理中枢（服务端与客户端 dial 进来）
+# hub_*: 过渡期控制面；[overlay] 为虚拟网管平面（与穿透无关）
 # [[servers]]: HTTP 反代回退地址
 
 listen = "0.0.0.0"
@@ -13,6 +13,20 @@ hub_listen = "0.0.0.0"
 hub_control_port = 7100
 hub_data_port = 7101
 hub_token = "change-me-hub-token"
+
+[overlay]
+enabled = true
+port = 51820
+listen = "0.0.0.0"
+subnet_cidr = "10.88.0.0/16"
+dhcp_start = "10.88.0.10"
+dhcp_end = "10.88.0.250"
+token = "change-me-overlay-token"
+role = "server"
+node_id = "admin"
+fixed_vip = "10.88.0.1"
+# bootstrap = []  # 对等 Overlay Server 列表，如 ["server.example:51820"]
+create_tun = false
 
 [[servers]]
 id = "default"

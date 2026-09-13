@@ -1,10 +1,11 @@
-//! Edge dial into Admin Hub: discover all servers, open P2P/relay peer paths.
+//! Edge dial into Admin Hub: control plane + tunnel data via Hub relay.
 
 use crate::config::EdgeConfig;
-use p2p_common::{PeerPathPurpose, PeerRole};
+use p2p_common::{PeerPathPurpose, PeerRole, ProtocolKind};
 use p2p_control::{ControlSession, HeartbeatConfig};
 use p2p_dataplane::copy_bidirectional;
 use p2p_protocol::{encode_data_handshake, ControlMessage, HubPeerInfo};
+use p2p_transport::set_nodelay;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -36,6 +37,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
 
     info!(%control_addr, node_id = %cfg.node_id, "connecting to admin hub");
     let stream = TcpStream::connect(&control_addr).await?;
+    set_nodelay(&stream, true);
     let mut session = ControlSession::new(stream, HeartbeatConfig::default());
 
     let hello = session
@@ -76,11 +78,25 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
         })
         .await?;
 
+    for svc in &cfg.services {
+        let protocol = ProtocolKind::parse(&svc.protocol).unwrap_or(ProtocolKind::Tcp);
+        session
+            .send(ControlMessage::RegisterService {
+                service_id: svc.service_id.clone(),
+                name: svc.name.clone(),
+                protocol,
+                local_addr: svc.local_addr.clone(),
+                public_port: None,
+                domain: None,
+                node_id: Some(cfg.node_id.clone()),
+            })
+            .await?;
+    }
+
     let servers: Arc<Mutex<Vec<HubPeerInfo>>> = Arc::new(Mutex::new(Vec::new()));
     let hub_host = hub_host.to_string();
     let (tx, mut rx, handle) = session.into_channels(256);
 
-    // After first roster, open mgmt paths to every online server (P2P prefer → relay).
     let mut opened = std::collections::HashSet::new();
 
     while let Some(msg) = rx.recv().await {
@@ -106,6 +122,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
                             target_id: s.node_id,
                             purpose: PeerPathPurpose::Mgmt,
                             prefer_p2p: true,
+                            local_addr: None,
                         })
                         .await;
                 }
@@ -116,6 +133,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
                 path,
                 purpose,
                 peer_node_id,
+                local_addr,
                 ..
             } => {
                 info!(
@@ -123,12 +141,20 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
                     %peer_node_id,
                     ?path,
                     ?purpose,
+                    ?local_addr,
                     "hub peer path offer"
                 );
                 let hub_host = hub_host.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        accept_peer_path(hub_host, data_port, connection_id, data_token).await
+                    if let Err(e) = accept_peer_path(
+                        hub_host,
+                        data_port,
+                        connection_id,
+                        data_token,
+                        purpose,
+                        local_addr,
+                    )
+                    .await
                     {
                         warn!(error = %e, "edge accept peer path failed");
                     }
@@ -149,13 +175,26 @@ async fn accept_peer_path(
     data_port: u16,
     connection_id: String,
     data_token: String,
+    purpose: PeerPathPurpose,
+    local_addr: Option<String>,
 ) -> anyhow::Result<()> {
     let mut data = TcpStream::connect(format!("{hub_host}:{data_port}")).await?;
+    set_nodelay(&data, true);
     let hs = encode_data_handshake(&connection_id, &data_token);
     data.write_all(&hs).await?;
-    // Keep relay leg alive; hub bridges to the server peer.
-    let (a, b) = tokio::io::duplex(8);
-    let _ = copy_bidirectional(data, a).await;
-    drop(b);
+    match purpose {
+        PeerPathPurpose::Data => {
+            let addr = local_addr.ok_or_else(|| anyhow::anyhow!("missing local_addr for tunnel"))?;
+            let local = TcpStream::connect(&addr).await?;
+            set_nodelay(&local, true);
+            info!(%connection_id, %addr, "edge bridging hub data <-> local");
+            let _ = copy_bidirectional(local, data).await?;
+        }
+        PeerPathPurpose::Mgmt => {
+            let (a, b) = tokio::io::duplex(8);
+            let _ = copy_bidirectional(data, a).await;
+            drop(b);
+        }
+    }
     Ok(())
 }

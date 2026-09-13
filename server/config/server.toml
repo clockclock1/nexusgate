@@ -1,13 +1,10 @@
 listen = "0.0.0.0"
-control_port = 7000
-data_port = 7001
-data_quic_port = 7002
-data_kcp_port = 7003
-# edge↔server 数据面：tcp | quic | kcp（公网网关仍为 TCP）
-data_transport = "tcp"
-# 额外同时监听的数据面（TCP 始终开启）
-# data_transports = ["quic", "kcp"]
+# 穿透映射口（访客入口）；管控不监听，出站连 Admin Hub
 gateway_port = 8080
+gateway_quic_port = 8443
+gateway_kcp_port = 8444
+gateway_transports = ["tcp", "quic", "kcp"]
+# 管理 API 仅本机（经 Hub MGMT_FORWARD 访问）
 api_port = 3000
 database_url = "sqlite://data/p2p.db"
 jwt_secret = "change-me-in-production-p2p-network"
@@ -18,9 +15,24 @@ max_connections = 100000
 enable_relay = true
 enable_p2p = true
 
-# 可选：接入管理面板 Admin Hub（p2p-admin 默认 7100/7101）
-# hub_host = "127.0.0.1"
-# hub_control_port = 7100
-# hub_data_port = 7101
-# hub_token = "change-me-hub-token"
-# hub_server_id = "default"
+# 过渡期：接入 Admin Hub
+hub_host = "127.0.0.1"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "change-me-hub-token"
+hub_server_id = "default"
+
+# 虚拟网 Overlay Server（与 admin 平级；管理流量，非访客穿透）
+[overlay]
+enabled = true
+port = 51820
+listen = "0.0.0.0"
+subnet_cidr = "10.88.0.0/16"
+dhcp_start = "10.88.0.10"
+dhcp_end = "10.88.0.250"
+token = "change-me-overlay-token"
+role = "server"
+node_id = "default"
+fixed_vip = "10.88.0.2"
+bootstrap = ["127.0.0.1:51820"]
+create_tun = false

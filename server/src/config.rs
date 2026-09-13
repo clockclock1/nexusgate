@@ -2,28 +2,25 @@ use p2p_common::TransportKind;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Server node: only opens penetration (mapped) ports publicly.
+/// Control/management goes outbound to Admin Hub — no public control/API listen.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
-    #[serde(default = "default_control_port")]
-    pub control_port: u16,
-    #[serde(default = "default_data_port")]
-    pub data_port: u16,
-    /// QUIC data-plane UDP port (used when data_transport=quic).
-    #[serde(default = "default_data_quic_port")]
-    pub data_quic_port: u16,
-    /// KCP data-plane UDP port (used when data_transport=kcp).
-    #[serde(default = "default_data_kcp_port")]
-    pub data_kcp_port: u16,
-    /// Preferred wire transport for edge ↔ server data plane: tcp | quic | kcp.
-    #[serde(default)]
-    pub data_transport: TransportKind,
-    /// Also listen for these transports (in addition to preferred).
-    #[serde(default)]
-    pub data_transports: Vec<TransportKind>,
+    /// TCP penetration entry (mapped public port).
     #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
+    /// QUIC penetration entry (mapped public UDP port).
+    #[serde(default = "default_gateway_quic_port")]
+    pub gateway_quic_port: u16,
+    /// KCP penetration entry (mapped public UDP port).
+    #[serde(default = "default_gateway_kcp_port")]
+    pub gateway_kcp_port: u16,
+    /// Which penetration entries to listen: tcp | quic | kcp (default all three).
+    #[serde(default = "default_gateway_transports")]
+    pub gateway_transports: Vec<TransportKind>,
+    /// Localhost-only management API (not publicly exposed).
     #[serde(default = "default_api_port")]
     pub api_port: u16,
     #[serde(default = "default_db")]
@@ -43,6 +40,7 @@ pub struct ServerConfig {
     #[serde(default)]
     pub enable_p2p: bool,
 
+    /// Required: Admin Hub host (control plane).
     #[serde(default)]
     pub hub_host: Option<String>,
     #[serde(default = "default_hub_control_port")]
@@ -53,25 +51,40 @@ pub struct ServerConfig {
     pub hub_token: Option<String>,
     #[serde(default)]
     pub hub_server_id: Option<String>,
+
+    /// Virtual overlay (management mesh). Server is an equal Overlay Server.
+    #[serde(default)]
+    pub overlay: p2p_overlay::OverlayConfig,
+
+    // ---- legacy fields (ignored; kept so old toml still loads) ----
+    #[serde(default)]
+    pub control_port: Option<u16>,
+    #[serde(default)]
+    pub data_port: Option<u16>,
+    #[serde(default)]
+    pub data_quic_port: Option<u16>,
+    #[serde(default)]
+    pub data_kcp_port: Option<u16>,
+    #[serde(default)]
+    pub data_transport: Option<TransportKind>,
+    #[serde(default)]
+    pub data_transports: Vec<TransportKind>,
 }
 
 fn default_listen() -> String {
     "0.0.0.0".into()
 }
-fn default_control_port() -> u16 {
-    7000
-}
-fn default_data_port() -> u16 {
-    7001
-}
-fn default_data_quic_port() -> u16 {
-    7002
-}
-fn default_data_kcp_port() -> u16 {
-    7003
-}
 fn default_gateway_port() -> u16 {
     8080
+}
+fn default_gateway_quic_port() -> u16 {
+    8443
+}
+fn default_gateway_kcp_port() -> u16 {
+    8444
+}
+fn default_gateway_transports() -> Vec<TransportKind> {
+    vec![TransportKind::Tcp, TransportKind::Quic, TransportKind::Kcp]
 }
 fn default_api_port() -> u16 {
     3000
@@ -102,13 +115,10 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
-            control_port: default_control_port(),
-            data_port: default_data_port(),
-            data_quic_port: default_data_quic_port(),
-            data_kcp_port: default_data_kcp_port(),
-            data_transport: TransportKind::Tcp,
-            data_transports: vec![],
             gateway_port: default_gateway_port(),
+            gateway_quic_port: default_gateway_quic_port(),
+            gateway_kcp_port: default_gateway_kcp_port(),
+            gateway_transports: default_gateway_transports(),
             api_port: default_api_port(),
             database_url: default_db(),
             jwt_secret: default_jwt_secret(),
@@ -123,6 +133,21 @@ impl Default for ServerConfig {
             hub_data_port: default_hub_data_port(),
             hub_token: None,
             hub_server_id: None,
+            overlay: {
+                let mut o = p2p_overlay::OverlayConfig::default();
+                o.enabled = true;
+                o.role = p2p_overlay::OverlayRole::Server;
+                o.node_id = "default".into();
+                o.fixed_vip = Some("10.88.0.2".into());
+                o.bootstrap = vec!["127.0.0.1:51820".into()];
+                o
+            },
+            control_port: None,
+            data_port: None,
+            data_quic_port: None,
+            data_kcp_port: None,
+            data_transport: None,
+            data_transports: vec![],
         }
     }
 }
@@ -132,25 +157,19 @@ impl ServerConfig {
         p2p_common::default_config_beside_exe("server.toml")
     }
 
-    pub fn enabled_data_transports(&self) -> Vec<TransportKind> {
-        let mut out = Vec::new();
-        out.push(self.data_transport);
-        for t in &self.data_transports {
-            if !out.contains(t) {
-                out.push(*t);
-            }
+    pub fn enabled_gateway_transports(&self) -> Vec<TransportKind> {
+        if self.gateway_transports.is_empty() {
+            default_gateway_transports()
+        } else {
+            self.gateway_transports.clone()
         }
-        if !out.contains(&TransportKind::Tcp) {
-            out.push(TransportKind::Tcp);
-        }
-        out
     }
 
-    pub fn port_for_transport(&self, t: TransportKind) -> u16 {
+    pub fn gateway_port_for(&self, t: TransportKind) -> u16 {
         match t {
-            TransportKind::Tcp => self.data_port,
-            TransportKind::Quic => self.data_quic_port,
-            TransportKind::Kcp => self.data_kcp_port,
+            TransportKind::Tcp => self.gateway_port,
+            TransportKind::Quic => self.gateway_quic_port,
+            TransportKind::Kcp => self.gateway_kcp_port,
         }
     }
 
@@ -163,8 +182,9 @@ impl ServerConfig {
         let cfg = Self::default();
         let body = toml::to_string_pretty(&cfg)?;
         let content = format!(
-            "# NexusGate Server 配置文件（首次运行自动生成）\n\
-             # data_transport: tcp | quic | kcp（edge↔server 数据面）\n\
+            "# NexusGate Server 节点配置（首次运行自动生成）\n\
+             # 只开放穿透映射口；管控出站连接 Admin Hub（hub_host 必填）\n\
+             # gateway_*: 访客入口 tcp/quic/kcp\n\
              #\n\
              {body}"
         );
@@ -188,8 +208,8 @@ impl ServerConfig {
         let path = path.as_ref();
         let body = toml::to_string_pretty(self)?;
         let content = format!(
-            "# NexusGate Server 配置文件\n\
-             # 可由管理面板「系统设置」写入；端口等变更通常需重启后生效。\n\
+            "# NexusGate Server 节点配置\n\
+             # 穿透映射口对外开放；管理 API 仅本机；管控走 Admin Hub。\n\
              #\n\
              {body}"
         );

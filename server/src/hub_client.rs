@@ -1,5 +1,7 @@
-//! Outbound connection from Super Node to Admin Hub.
+//! Outbound connection from server node to Admin Hub (control + tunnel relay).
+//! Server does NOT listen on a control plane; Hub is the only management channel.
 
+use crate::gateway::complete_hub_tunnel;
 use crate::state::AppState;
 use base64::Engine;
 use p2p_common::{PeerPathPurpose, PeerRole};
@@ -12,17 +14,18 @@ use tokio::net::TcpStream;
 use tracing::{info, warn};
 
 pub async fn run_hub_client(state: AppState) {
-    let cfg = state.config.read().clone();
-    let Some(hub_host) = cfg.hub_host.filter(|h| !h.trim().is_empty()) else {
-        info!("hub_host not set; skip admin hub client");
-        return;
-    };
-
     loop {
+        let cfg = state.config.read().clone();
+        let Some(hub_host) = cfg.hub_host.filter(|h| !h.trim().is_empty()) else {
+            tracing::error!("hub_host is required (server has no local control plane)");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        };
         match run_once(&state, &hub_host).await {
             Ok(()) => warn!("hub session closed, reconnecting..."),
             Err(e) => warn!(error = %e, "hub session error, reconnecting..."),
         }
+        *state.hub_tx.write() = None;
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
@@ -84,14 +87,41 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
         .await?;
 
     let api_port = cfg.api_port;
-    let listen = cfg.listen.clone();
     let hub_host = hub_host.to_string();
     let (tx, mut rx, handle) = session.into_channels(256);
+    *state.hub_tx.write() = Some(tx.clone());
 
     while let Some(msg) = rx.recv().await {
         match msg {
             ControlMessage::HubPeers { peers } => {
                 info!(count = peers.len(), "hub roster updated");
+                *state.hub_peers.write() = peers;
+                state.refresh_online_metric();
+            }
+            ControlMessage::RegisterService {
+                service_id,
+                name,
+                protocol,
+                local_addr,
+                node_id,
+                ..
+            } => {
+                let proto = protocol.as_str().to_string();
+                let edge_id = node_id.unwrap_or_default();
+                if let Err(e) = upsert_registered_service(
+                    &state.db,
+                    &edge_id,
+                    &service_id,
+                    &name,
+                    &proto,
+                    &local_addr,
+                )
+                .await
+                {
+                    warn!(error = %e, %service_id, "hub service register failed");
+                } else {
+                    info!(%service_id, %edge_id, %local_addr, "hub-forwarded service registered");
+                }
             }
             ControlMessage::MgmtForward {
                 request_id,
@@ -100,13 +130,11 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
                 headers,
                 body_b64,
             } => {
-                let listen = listen.clone();
                 let tx = tx.clone();
+                let api_port = api_port;
                 tokio::spawn(async move {
-                    let reply = match execute_local_mgmt(
-                        listen, api_port, method, path, headers, body_b64,
-                    )
-                    .await
+                    let reply = match execute_local_mgmt(api_port, method, path, headers, body_b64)
+                        .await
                     {
                         Ok((status, resp_headers, body)) => ControlMessage::MgmtForwardResult {
                             request_id,
@@ -129,25 +157,37 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
                 });
             }
             ControlMessage::PeerPathOffer {
+                request_id,
                 connection_id,
                 data_token,
                 path,
                 purpose,
                 peer_node_id,
+                local_addr,
                 ..
             } => {
                 info!(
+                    %request_id,
                     %connection_id,
                     %peer_node_id,
                     ?path,
                     ?purpose,
+                    ?local_addr,
                     "hub peer path offer"
                 );
                 let hub_host = hub_host.clone();
+                let state = state.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        accept_peer_path(hub_host, data_port, connection_id, data_token, purpose)
-                            .await
+                    if let Err(e) = accept_peer_path(
+                        state,
+                        hub_host,
+                        data_port,
+                        request_id,
+                        connection_id,
+                        data_token,
+                        purpose,
+                    )
+                    .await
                     {
                         warn!(error = %e, "accept peer path failed");
                     }
@@ -164,8 +204,10 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
 }
 
 async fn accept_peer_path(
+    state: AppState,
     hub_host: String,
     data_port: u16,
+    request_id: String,
     connection_id: String,
     data_token: String,
     purpose: PeerPathPurpose,
@@ -174,7 +216,11 @@ async fn accept_peer_path(
     let hs = encode_data_handshake(&connection_id, &data_token);
     data.write_all(&hs).await?;
     match purpose {
-        PeerPathPurpose::Mgmt | PeerPathPurpose::Data => {
+        PeerPathPurpose::Data => {
+            complete_hub_tunnel(&state, &request_id, data).await?;
+        }
+        PeerPathPurpose::Mgmt => {
+            // Keep relay leg alive for management mesh.
             let (a, b) = tokio::io::duplex(8);
             let _ = copy_bidirectional(data, a).await;
             drop(b);
@@ -184,19 +230,29 @@ async fn accept_peer_path(
 }
 
 async fn execute_local_mgmt(
-    listen: String,
     api_port: u16,
     method: String,
     path: String,
     headers: Vec<(String, String)>,
     body_b64: Option<String>,
 ) -> anyhow::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
-    let host = if listen == "0.0.0.0" || listen == "::" {
-        "127.0.0.1".to_string()
-    } else {
-        listen
+    let body = match body_b64 {
+        Some(b64) => Some(base64::engine::general_purpose::STANDARD.decode(b64)?),
+        None => None,
     };
-    let url = format!("http://{host}:{api_port}{path}");
+    execute_local_mgmt_bytes(api_port, method, path, headers, body).await
+}
+
+/// Localhost management API call (used by Hub MGMT_FORWARD and overlay mesh).
+pub async fn execute_local_mgmt_bytes(
+    api_port: u16,
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+) -> anyhow::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    // API is localhost-only (not a public management port).
+    let url = format!("http://127.0.0.1:{api_port}{path}");
     let client = reqwest::Client::new();
     let mut builder = client.request(
         reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET),
@@ -208,8 +264,7 @@ async fn execute_local_mgmt(
         }
         builder = builder.header(k, v);
     }
-    if let Some(b64) = body_b64 {
-        let body = base64::engine::general_purpose::STANDARD.decode(b64)?;
+    if let Some(body) = body {
         builder = builder.body(body);
     }
     let resp = builder.send().await?;
@@ -222,6 +277,35 @@ async fn execute_local_mgmt(
     }
     let body = resp.bytes().await?.to_vec();
     Ok((status, resp_headers, body))
+}
+
+/// Upsert a service row from overlay / Hub registration.
+pub async fn upsert_registered_service(
+    db: &sqlx::SqlitePool,
+    edge_id: &str,
+    service_id: &str,
+    name: &str,
+    protocol: &str,
+    local_addr: &str,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"INSERT INTO services (service_id, name, node_id, protocol, local_addr, enabled, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+           ON CONFLICT(service_id) DO UPDATE SET
+           name=excluded.name, node_id=excluded.node_id, protocol=excluded.protocol,
+           local_addr=excluded.local_addr, updated_at=excluded.updated_at"#,
+    )
+    .bind(service_id)
+    .bind(name)
+    .bind(edge_id)
+    .bind(protocol)
+    .bind(local_addr)
+    .bind(&now)
+    .bind(&now)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 fn hostname() -> String {

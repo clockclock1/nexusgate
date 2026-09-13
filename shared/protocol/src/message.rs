@@ -62,6 +62,9 @@ pub enum ControlMessage {
         public_port: Option<u16>,
         #[serde(default)]
         domain: Option<String>,
+        /// Populated when Hub forwards an edge registration to servers.
+        #[serde(default)]
+        node_id: Option<String>,
     },
     UnregisterService {
         service_id: String,
@@ -164,6 +167,9 @@ pub enum ControlMessage {
         purpose: PeerPathPurpose,
         #[serde(default)]
         prefer_p2p: bool,
+        /// For `purpose=data`: edge local service address (e.g. 127.0.0.1:8000).
+        #[serde(default)]
+        local_addr: Option<String>,
     },
 
     /// Hub → both peers: dial Hub data port (relay) or use candidates (p2p).
@@ -176,6 +182,9 @@ pub enum ControlMessage {
         purpose: PeerPathPurpose,
         #[serde(default)]
         candidates: Vec<PeerCandidate>,
+        /// For tunnel data: local service the edge should dial.
+        #[serde(default)]
+        local_addr: Option<String>,
     },
 
     /// Browser/Admin → Server (via Hub control): forward an HTTP management call.

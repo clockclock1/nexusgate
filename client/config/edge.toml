@@ -1,19 +1,28 @@
 node_id = "edge-demo"
 token = "REPLACE_WITH_TOKEN_FROM_ADMIN"
+name = "demo-edge"
+
+# 过渡期控制面 = Admin Hub
+hub_host = "127.0.0.1"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "change-me-hub-token"
+
+# 虚拟网 Overlay Node（管理面 VIP；与穿透端口映射无关）
+[overlay]
+enabled = true
+port = 51820
+listen = "0.0.0.0"
+token = "change-me-overlay-token"
+role = "node"
+node_id = "edge-demo"
+bootstrap = ["127.0.0.1:51820"]
+create_tun = false
+
+# 以下为兼容旧配置字段（Hub 模式下可忽略）
 server = "127.0.0.1"
 control_port = 7000
 data_port = 7001
-data_quic_port = 7002
-data_kcp_port = 7003
-# 对外声明支持的数据面（空则默认 tcp+quic+kcp）
-# transports = ["tcp", "quic", "kcp"]
-name = "demo-edge"
-
-# Hub 字段必须写在 [[services]] 之前（TOML 数组表之后的裸键会归入该 service）
-# hub_host = "127.0.0.1"
-# hub_control_port = 7100
-# hub_data_port = 7101
-# hub_token = "change-me-hub-token"
 
 [[services]]
 service_id = "web"

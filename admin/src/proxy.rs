@@ -128,8 +128,7 @@ fn strip_server_query(path_and_query: &str) -> String {
 }
 
 /// Reverse-proxy any `/api/*` HTTP request to the selected Super Node.
-/// Prefer Hub management forward when that server is dialed into the Admin Hub;
-/// otherwise fall back to HTTP `api_upstream`.
+/// Prefer internal management mesh, then Hub forward, then HTTP `api_upstream`.
 pub async fn proxy_http(State(state): State<AppState>, req: Request) -> Response {
     let method = req.method().clone();
     let server_id = server_id_from_headers(req.headers()).or_else(|| server_id_from_uri(req.uri()));
@@ -156,7 +155,64 @@ pub async fn proxy_http(State(state): State<AppState>, req: Request) -> Response
         }
     };
 
-    // Hub path: server peer online on management mesh
+    // Prefer internal management mesh (panel ↔ server) when peer is online.
+    if let Some(mesh) = &state.mesh {
+        if mesh.is_peer_online(&entry.id) {
+            let hdrs: Vec<(String, String)> = headers
+                .iter()
+                .filter_map(|(k, v)| {
+                    v.to_str()
+                        .ok()
+                        .map(|val| (k.as_str().to_string(), val.to_string()))
+                })
+                .collect();
+            match mesh
+                .mgmt_forward(
+                    &entry.id,
+                    method.as_str(),
+                    &path_and_query,
+                    hdrs,
+                    body_bytes.to_vec(),
+                    Some(std::time::Duration::from_secs(30)),
+                )
+                .await
+            {
+                Ok(resp) => {
+                    if let Some(err) = resp.error {
+                        tracing::warn!(
+                            server = %entry.id,
+                            %err,
+                            "mesh mgmt error, trying Hub/HTTP"
+                        );
+                    } else {
+                        let mut response = Response::new(Body::from(resp.body));
+                        *response.status_mut() =
+                            StatusCode::from_u16(resp.status).unwrap_or(StatusCode::BAD_GATEWAY);
+                        let mut out = HeaderMap::new();
+                        for (k, v) in resp.headers {
+                            if let (Ok(name), Ok(val)) = (
+                                HeaderName::from_bytes(k.as_bytes()),
+                                HeaderValue::from_str(&v),
+                            ) {
+                                out.append(name, val);
+                            }
+                        }
+                        *response.headers_mut() = out;
+                        return response;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        server = %entry.id,
+                        "mesh mgmt forward failed, trying Hub/HTTP"
+                    );
+                }
+            }
+        }
+    }
+
+    // Hub path: server peer online on transitional Hub
     if let Some(hub) = &state.hub {
         if hub.is_server_online(&entry.id) {
             let hdrs: Vec<(String, String)> = headers

@@ -36,6 +36,10 @@ pub struct AdminConfig {
     /// Shared token for servers/edges dialing into the Hub.
     #[serde(default = "default_hub_token")]
     pub hub_token: String,
+
+    /// Virtual overlay (management mesh). Admin is an equal Overlay Server.
+    #[serde(default)]
+    pub overlay: p2p_overlay::OverlayConfig,
 }
 
 fn default_listen() -> String {
@@ -78,6 +82,14 @@ impl Default for AdminConfig {
             hub_control_port: default_hub_control_port(),
             hub_data_port: default_hub_data_port(),
             hub_token: default_hub_token(),
+            overlay: {
+                let mut o = p2p_overlay::OverlayConfig::default();
+                o.enabled = true;
+                o.role = p2p_overlay::OverlayRole::Server;
+                o.node_id = "admin".into();
+                o.fixed_vip = Some("10.88.0.1".into());
+                o
+            },
         }
     }
 }
@@ -133,7 +145,7 @@ impl AdminConfig {
         let content = format!(
             "# NexusGate Admin Panel + Hub\n\
              # listen / listen_port: Web 面板\n\
-             # hub_*: P2P/中转管理中枢（服务端与客户端 dial 进来）\n\
+             # hub_*: 过渡期控制面（Hub）；[overlay] 为虚拟网管平面\n\
              # [[servers]]: HTTP 反代回退地址\n\
              #\n\
              {body}"

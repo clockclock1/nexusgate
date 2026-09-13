@@ -18,6 +18,7 @@ p2p-p2p = { workspace = true }
 p2p-router = { workspace = true }
 p2p-security = { workspace = true }
 p2p-metrics = { workspace = true }
+p2p-overlay = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }

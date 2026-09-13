@@ -33,6 +33,10 @@ pub struct EdgeConfig {
     pub hub_data_port: u16,
     #[serde(default)]
     pub hub_token: Option<String>,
+
+    /// Virtual overlay (management mesh). Edge joins as Overlay Node.
+    #[serde(default)]
+    pub overlay: p2p_overlay::OverlayConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +96,13 @@ impl Default for EdgeConfig {
             hub_control_port: default_hub_control_port(),
             hub_data_port: default_hub_data_port(),
             hub_token: None,
+            overlay: {
+                let mut o = p2p_overlay::OverlayConfig::default();
+                o.enabled = true;
+                o.role = p2p_overlay::OverlayRole::Node;
+                o.bootstrap = vec!["127.0.0.1:51820".into()];
+                o
+            },
         }
     }
 }

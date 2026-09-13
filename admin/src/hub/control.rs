@@ -116,9 +116,17 @@ async fn handle_hub_msg(state: &HubState, from_id: &str, msg: ControlMessage) ->
             target_id,
             purpose,
             prefer_p2p,
+            local_addr,
         } => {
             if let Err(e) = state
-                .open_peer_path(from_id, &target_id, &request_id, purpose, prefer_p2p)
+                .open_peer_path(
+                    from_id,
+                    &target_id,
+                    &request_id,
+                    purpose,
+                    prefer_p2p,
+                    local_addr,
+                )
                 .await
             {
                 state.send_to(
@@ -129,6 +137,31 @@ async fn handle_hub_msg(state: &HubState, from_id: &str, msg: ControlMessage) ->
                         connection_id: None,
                     },
                 );
+            }
+        }
+        // Edge service announcements → forward to all online servers (DB lives on server).
+        ControlMessage::RegisterService {
+            service_id,
+            name,
+            protocol,
+            local_addr,
+            public_port,
+            domain,
+            ..
+        } => {
+            let msg = ControlMessage::RegisterService {
+                service_id,
+                name,
+                protocol,
+                local_addr,
+                public_port,
+                domain,
+                node_id: Some(from_id.to_string()),
+            };
+            for e in state.peers.iter() {
+                if e.value().role == PeerRole::Server {
+                    let _ = e.value().tx.try_send(msg.clone());
+                }
             }
         }
         ControlMessage::MgmtForwardResult {
