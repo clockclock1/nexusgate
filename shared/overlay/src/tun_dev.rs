@@ -21,7 +21,7 @@ impl TunDevice {
             if create {
                 let mut config = tun::Configuration::default();
                 config
-                    .tun_name(name)
+                    .name(name)
                     .address(vip)
                     .netmask(prefix_to_mask(prefix))
                     .up();
