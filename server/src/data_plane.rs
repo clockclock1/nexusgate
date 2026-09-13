@@ -3,27 +3,79 @@ use bytes::BytesMut;
 use chrono::Utc;
 use p2p_dataplane::copy_bidirectional;
 use p2p_protocol::{extract_line, parse_data_handshake};
+use p2p_transport::{self as transport, set_nodelay};
 use std::net::SocketAddr;
 use std::time::Instant;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn};
 
 pub async fn run_data_plane(state: AppState, addr: SocketAddr) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    info!(%addr, "data plane listening");
+    info!(%addr, transport = "tcp", "data plane listening");
     loop {
         let (stream, peer) = listener.accept().await?;
+        set_nodelay(&stream, true);
         let state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_data(state, stream, peer).await {
-                warn!(%peer, error = %e, "data connection failed");
+            if let Err(e) = handle_data_stream(state, stream, peer, "tcp").await {
+                warn!(%peer, error = %e, "tcp data connection failed");
             }
         });
     }
 }
 
-async fn handle_data(state: AppState, mut stream: TcpStream, peer: SocketAddr) -> anyhow::Result<()> {
+pub async fn run_quic_data_plane(state: AppState, addr: SocketAddr) -> anyhow::Result<()> {
+    let endpoint = transport::bind_quic_server(addr).await?;
+    info!(%addr, transport = "quic", "data plane listening");
+    loop {
+        match transport::accept_quic_bidi(&endpoint).await {
+            Ok((stream, peer)) => {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_data_stream(state, stream, peer, "quic").await {
+                        warn!(%peer, error = %e, "quic data connection failed");
+                    }
+                });
+            }
+            Err(e) => {
+                warn!(error = %e, "quic accept failed");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+    }
+}
+
+pub async fn run_kcp_data_plane(state: AppState, addr: SocketAddr) -> anyhow::Result<()> {
+    let mut listener = transport::bind_kcp_server(addr).await?;
+    info!(%addr, transport = "kcp", "data plane listening");
+    loop {
+        match transport::accept_kcp(&mut listener).await {
+            Ok((stream, peer)) => {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_data_stream(state, stream, peer, "kcp").await {
+                        warn!(%peer, error = %e, "kcp data connection failed");
+                    }
+                });
+            }
+            Err(e) => {
+                warn!(error = %e, "kcp accept failed");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+    }
+}
+
+async fn handle_data_stream<S>(
+    state: AppState,
+    mut stream: S,
+    peer: SocketAddr,
+    mode: &str,
+) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut buf = BytesMut::with_capacity(256);
     let deadline = tokio::time::sleep(std::time::Duration::from_secs(10));
     tokio::pin!(deadline);
@@ -54,8 +106,8 @@ async fn handle_data(state: AppState, mut stream: TcpStream, peer: SocketAddr) -
             .take()
             .ok_or_else(|| anyhow::anyhow!("public side missing"))?
     };
+    set_nodelay(&public, true);
 
-    // Remove pending entry
     let pending = state.pending.remove(&connection_id).map(|(_, v)| v);
     let node_id = pending
         .as_ref()
@@ -70,6 +122,7 @@ async fn handle_data(state: AppState, mut stream: TcpStream, peer: SocketAddr) -
         .map(|p| p.protocol.clone())
         .unwrap_or_else(|| "tcp".into());
 
+    let mode_label = format!("relay/{mode}");
     state.metrics.conn_opened(false);
     state.connections.insert(
         connection_id.clone(),
@@ -77,7 +130,7 @@ async fn handle_data(state: AppState, mut stream: TcpStream, peer: SocketAddr) -
             conn_id: connection_id.clone(),
             node_id: node_id.clone(),
             protocol: protocol.clone(),
-            mode: "relay".into(),
+            mode: mode_label.clone(),
             status: "active".into(),
             local_addr: local_addr.clone(),
             remote_addr: peer.to_string(),
@@ -88,7 +141,7 @@ async fn handle_data(state: AppState, mut stream: TcpStream, peer: SocketAddr) -
     );
     state.broadcast(serde_json::json!({
         "type": "connection_created",
-        "payload": { "conn_id": connection_id, "node_id": node_id, "mode": "relay" }
+        "payload": { "conn_id": connection_id, "node_id": node_id, "mode": mode_label }
     }));
 
     let (rx, tx) = copy_bidirectional(public, stream).await.unwrap_or((0, 0));
@@ -113,6 +166,7 @@ pub fn register_pending(
     protocol: String,
     public: TcpStream,
 ) {
+    set_nodelay(&public, true);
     state.pending.insert(
         connection_id.clone(),
         PendingConnection {

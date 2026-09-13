@@ -610,15 +610,21 @@ write_server_config_file() {
   local database_url="$6" jwt_secret="$7" jwt_ttl="$8" admin_user="$9" admin_password="${10}"
   local max_connections="${11}" enable_relay="${12}" enable_p2p="${13}"
   local hub_block="${14:-}"
+  local data_quic_port="${15:-7002}" data_kcp_port="${16:-7003}" data_transport="${17:-tcp}"
   listen="$(toml_escape "$listen")"
   database_url="$(toml_escape "$database_url")"
   jwt_secret="$(toml_escape "$jwt_secret")"
   admin_user="$(toml_escape "$admin_user")"
   admin_password="$(toml_escape "$admin_password")"
+  data_transport="$(toml_escape "$data_transport")"
   cat >"$SERVER_CFG" <<EOF
 listen = "${listen}"
 control_port = ${control_port}
 data_port = ${data_port}
+data_quic_port = ${data_quic_port}
+data_kcp_port = ${data_kcp_port}
+data_transport = "${data_transport}"
+data_transports = ["quic", "kcp"]
 gateway_port = ${gateway_port}
 api_port = ${api_port}
 database_url = "${database_url}"
@@ -642,7 +648,7 @@ configure_server_interactive() {
   echo "  配置文件将写入: ${SERVER_CFG}"
   echo
 
-  local listen control_port data_port gateway_port api_port
+  local listen control_port data_port data_quic_port data_kcp_port data_transport gateway_port api_port
   local database_url jwt_secret jwt_ttl admin_user admin_password
   local max_connections enable_relay enable_p2p
   local def_relay=Y def_p2p=Y
@@ -650,7 +656,10 @@ configure_server_interactive() {
 
   listen="$(ask_input "监听地址 listen" "$(toml_get "$SERVER_CFG" listen "0.0.0.0")" 1)"
   control_port="$(ask_input "控制面端口 control_port" "$(toml_get "$SERVER_CFG" control_port 7000)" 1)"
-  data_port="$(ask_input "数据面端口 data_port" "$(toml_get "$SERVER_CFG" data_port 7001)" 1)"
+  data_port="$(ask_input "数据面 TCP 端口 data_port" "$(toml_get "$SERVER_CFG" data_port 7001)" 1)"
+  data_quic_port="$(ask_input "数据面 QUIC 端口 data_quic_port" "$(toml_get "$SERVER_CFG" data_quic_port 7002)" 1)"
+  data_kcp_port="$(ask_input "数据面 KCP 端口 data_kcp_port" "$(toml_get "$SERVER_CFG" data_kcp_port 7003)" 1)"
+  data_transport="$(ask_input "首选数据面 data_transport (tcp|quic|kcp)" "$(toml_get "$SERVER_CFG" data_transport "tcp")" 1)"
   gateway_port="$(ask_input "网关端口 gateway_port" "$(toml_get "$SERVER_CFG" gateway_port 8080)" 1)"
   api_port="$(ask_input "管理 API 端口 api_port" "$(toml_get "$SERVER_CFG" api_port 3000)" 1)"
   database_url="$(ask_input "数据库 URL database_url" "$(toml_get "$SERVER_CFG" database_url "sqlite:///opt/nexusgate/data/p2p.db")" 1)"
@@ -697,18 +706,21 @@ hub_server_id = \"$(toml_escape "$hub_server_id")\"
   write_server_config_file \
     "$listen" "$control_port" "$data_port" "$gateway_port" "$api_port" \
     "$database_url" "$jwt_secret" "$jwt_ttl" "$admin_user" "$admin_password" \
-    "$max_connections" "$enable_relay" "$enable_p2p" "$hub_block"
+    "$max_connections" "$enable_relay" "$enable_p2p" "$hub_block" \
+    "$data_quic_port" "$data_kcp_port" "$data_transport"
 
   echo
   log "服务端配置已保存: ${SERVER_CFG}"
   echo -e "  API: http://${listen}:${api_port}  Gateway: :${gateway_port}"
-  echo -e "  Control: :${control_port}  Data: :${data_port}"
+  echo -e "  Control: :${control_port}  Data TCP: :${data_port}  QUIC: :${data_quic_port}  KCP: :${data_kcp_port}"
+  echo -e "  data_transport: ${data_transport}"
   echo -e "  管理员: ${admin_user} / ${admin_password}"
 }
 
 write_client_config_file() {
   local node_id="$1" token="$2" server="$3" control_port="$4" data_port="$5" name="$6"
   local services_block="$7"
+  local data_quic_port="${8:-7002}" data_kcp_port="${9:-7003}"
   node_id="$(toml_escape "$node_id")"
   token="$(toml_escape "$token")"
   server="$(toml_escape "$server")"
@@ -719,6 +731,9 @@ token = "${token}"
 server = "${server}"
 control_port = ${control_port}
 data_port = ${data_port}
+data_quic_port = ${data_quic_port}
+data_kcp_port = ${data_kcp_port}
+transports = ["tcp", "quic", "kcp"]
 name = "${name}"
 ${services_block}
 EOF
@@ -733,14 +748,16 @@ configure_client_interactive() {
   echo "  node_id / token 请在管理面板创建节点后获取"
   echo
 
-  local node_id token server control_port data_port name
+  local node_id token server control_port data_port data_quic_port data_kcp_port name
   local sid sname proto laddr services_block="" n=0
 
   node_id="$(ask_input "节点 ID node_id" "$(toml_get "$CLIENT_CFG" node_id "edge-demo")" 1)"
   token="$(ask_input "节点 Token token" "$(toml_get "$CLIENT_CFG" token "")" 1)"
   server="$(ask_input "服务端地址 server" "$(toml_get "$CLIENT_CFG" server "127.0.0.1")" 1)"
   control_port="$(ask_input "控制面端口 control_port" "$(toml_get "$CLIENT_CFG" control_port 7000)" 1)"
-  data_port="$(ask_input "数据面端口 data_port" "$(toml_get "$CLIENT_CFG" data_port 7001)" 1)"
+  data_port="$(ask_input "数据面 TCP 端口 data_port" "$(toml_get "$CLIENT_CFG" data_port 7001)" 1)"
+  data_quic_port="$(ask_input "数据面 QUIC 端口 data_quic_port" "$(toml_get "$CLIENT_CFG" data_quic_port 7002)" 1)"
+  data_kcp_port="$(ask_input "数据面 KCP 端口 data_kcp_port" "$(toml_get "$CLIENT_CFG" data_kcp_port 7003)" 1)"
   name="$(ask_input "节点显示名 name" "$(toml_get "$CLIENT_CFG" name "demo-edge")" 1)"
 
   local hub_host hub_token hub_control_port hub_data_port hub_block=""
@@ -793,11 +810,13 @@ local_addr = \"$(toml_escape "$laddr")\"
   done
 
   # hub_block 必须在 services 之前写入
-  write_client_config_file "$node_id" "$token" "$server" "$control_port" "$data_port" "$name" "${hub_block}${services_block}"
+  write_client_config_file "$node_id" "$token" "$server" "$control_port" "$data_port" "$name" "${hub_block}${services_block}" \
+    "$data_quic_port" "$data_kcp_port"
 
   echo
   log "客户端配置已保存: ${CLIENT_CFG}"
   echo -e "  节点: ${node_id} @ ${server}:${control_port}"
+  echo -e "  Data TCP: :${data_port}  QUIC: :${data_quic_port}  KCP: :${data_kcp_port}"
   echo -e "  已配置 ${n} 个本地服务"
   if [[ "$token" == "REPLACE_WITH_TOKEN_FROM_ADMIN" || -z "$token" ]]; then
     warn "token 仍为占位/空，连接服务端前请到管理面板创建节点并填入真实 token"

@@ -127,8 +127,11 @@ pub async fn server_info(State(state): State<AppState>) -> Json<Value> {
         "ports": [
             { "name": "control", "port": cfg.control_port, "protocol": "tcp", "status": "listening" },
             { "name": "data", "port": cfg.data_port, "protocol": "tcp", "status": "listening" },
+            { "name": "data_quic", "port": cfg.data_quic_port, "protocol": "udp", "status": "listening" },
+            { "name": "data_kcp", "port": cfg.data_kcp_port, "protocol": "udp", "status": "listening" },
             { "name": "gateway", "port": cfg.gateway_port, "protocol": "tcp", "status": "listening" },
             { "name": "api", "port": cfg.api_port, "protocol": "tcp", "status": "listening" },
+            { "name": "data_transport", "value": cfg.data_transport.as_str(), "status": "preferred" },
         ],
         "node_count": state.online.len(),
         "connection_count": state.connections.len(),

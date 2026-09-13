@@ -1,5 +1,6 @@
 use p2p_common::{
     ConnectionId, NatInfo, NodeId, PathKind, PeerCandidate, PeerPathPurpose, PeerRole, ProtocolKind,
+    TransportKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +49,9 @@ pub enum ControlMessage {
         version: Option<String>,
         #[serde(default)]
         labels: Vec<String>,
+        /// Wire transports this edge supports for the data plane.
+        #[serde(default)]
+        transports: Vec<TransportKind>,
     },
     RegisterService {
         service_id: String,
@@ -77,6 +81,12 @@ pub enum ControlMessage {
         path: PathKind,
         #[serde(default)]
         service_id: Option<String>,
+        /// Wire transport for edge ↔ server data plane.
+        #[serde(default)]
+        transport: TransportKind,
+        /// Data-plane port for the selected transport (TCP/QUIC/KCP).
+        #[serde(default)]
+        data_port: Option<u16>,
     },
     Accept {
         connection_id: String,
@@ -235,6 +245,8 @@ impl ControlMessage {
             protocol,
             path: PathKind::Relay,
             service_id: None,
+            transport: TransportKind::Tcp,
+            data_port: None,
         }
     }
 

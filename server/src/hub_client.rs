@@ -79,6 +79,7 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
             hostname: Some(hostname()),
             version: Some(env!("CARGO_PKG_VERSION").into()),
             labels: vec!["role:server".into()],
+            transports: vec![],
         })
         .await?;
 

@@ -26,10 +26,18 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
     let mut session = ControlSession::new(stream, HeartbeatConfig::default());
 
     // HELLO
+    let cfg = state.config.read().clone();
+    let mut features = vec!["tcp".into(), "relay".into(), "p2p".into()];
+    for t in cfg.enabled_data_transports() {
+        let s = t.as_str().to_string();
+        if !features.contains(&s) {
+            features.push(s);
+        }
+    }
     session
         .send(ControlMessage::Hello {
             version: env!("CARGO_PKG_VERSION").into(),
-            features: vec!["tcp".into(), "relay".into(), "p2p".into()],
+            features,
         })
         .await?;
 
@@ -91,6 +99,7 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
         connected_at: Instant::now(),
         last_seen: Instant::now(),
         tx: tx.clone(),
+        transports: vec![p2p_common::TransportKind::Tcp],
     };
     state.online.insert(node_id.clone(), online);
     state.refresh_online_metric();
@@ -113,6 +122,7 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
             ControlMessage::Register {
                 hostname,
                 version,
+                transports,
                 ..
             } => {
                 if let Some(mut n) = state.online.get_mut(&node_id) {
@@ -123,6 +133,9 @@ async fn handle_control(state: AppState, stream: TcpStream, peer: SocketAddr) ->
                             .bind(&node_id)
                             .execute(&state.db)
                             .await;
+                    }
+                    if !transports.is_empty() {
+                        n.transports = transports;
                     }
                     let _ = hostname;
                 }
@@ -213,6 +226,25 @@ pub async fn send_connect(
     local_addr: &str,
     protocol: p2p_common::ProtocolKind,
 ) -> anyhow::Result<()> {
+    let cfg = state.config.read().clone();
+    let preferred = cfg.data_transport;
+    let edge_caps = state
+        .online
+        .get(node_id)
+        .map(|n| n.transports.clone())
+        .unwrap_or_else(|| vec![p2p_common::TransportKind::Tcp]);
+    let transport = if edge_caps.contains(&preferred) {
+        preferred
+    } else if edge_caps.contains(&p2p_common::TransportKind::Tcp) {
+        p2p_common::TransportKind::Tcp
+    } else {
+        edge_caps
+            .first()
+            .copied()
+            .unwrap_or(p2p_common::TransportKind::Tcp)
+    };
+    let data_port = cfg.port_for_transport(transport);
+
     let Some(node) = state.online.get(node_id) else {
         anyhow::bail!("node offline: {node_id}");
     };
@@ -224,6 +256,8 @@ pub async fn send_connect(
             protocol,
             path: p2p_common::PathKind::Relay,
             service_id: None,
+            transport,
+            data_port: Some(data_port),
         })
         .await
         .map_err(|_| anyhow::anyhow!("control send failed"))?;

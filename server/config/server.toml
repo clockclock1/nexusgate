@@ -1,6 +1,12 @@
 listen = "0.0.0.0"
 control_port = 7000
 data_port = 7001
+data_quic_port = 7002
+data_kcp_port = 7003
+# edge↔server 数据面：tcp | quic | kcp（公网网关仍为 TCP）
+data_transport = "tcp"
+# 额外同时监听的数据面（TCP 始终开启）
+# data_transports = ["quic", "kcp"]
 gateway_port = 8080
 api_port = 3000
 database_url = "sqlite://data/p2p.db"

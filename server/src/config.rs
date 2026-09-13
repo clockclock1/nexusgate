@@ -1,3 +1,4 @@
+use p2p_common::TransportKind;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -9,6 +10,18 @@ pub struct ServerConfig {
     pub control_port: u16,
     #[serde(default = "default_data_port")]
     pub data_port: u16,
+    /// QUIC data-plane UDP port (used when data_transport=quic).
+    #[serde(default = "default_data_quic_port")]
+    pub data_quic_port: u16,
+    /// KCP data-plane UDP port (used when data_transport=kcp).
+    #[serde(default = "default_data_kcp_port")]
+    pub data_kcp_port: u16,
+    /// Preferred wire transport for edge ↔ server data plane: tcp | quic | kcp.
+    #[serde(default)]
+    pub data_transport: TransportKind,
+    /// Also listen for these transports (in addition to preferred).
+    #[serde(default)]
+    pub data_transports: Vec<TransportKind>,
     #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
     #[serde(default = "default_api_port")]
@@ -30,7 +43,6 @@ pub struct ServerConfig {
     #[serde(default)]
     pub enable_p2p: bool,
 
-    /// Admin Hub host (panel). When set, this Super Node dials into the Hub.
     #[serde(default)]
     pub hub_host: Option<String>,
     #[serde(default = "default_hub_control_port")]
@@ -39,7 +51,6 @@ pub struct ServerConfig {
     pub hub_data_port: u16,
     #[serde(default)]
     pub hub_token: Option<String>,
-    /// Identity on the Hub (should match admin [[servers]].id).
     #[serde(default)]
     pub hub_server_id: Option<String>,
 }
@@ -52,6 +63,12 @@ fn default_control_port() -> u16 {
 }
 fn default_data_port() -> u16 {
     7001
+}
+fn default_data_quic_port() -> u16 {
+    7002
+}
+fn default_data_kcp_port() -> u16 {
+    7003
 }
 fn default_gateway_port() -> u16 {
     8080
@@ -87,6 +104,10 @@ impl Default for ServerConfig {
             listen: default_listen(),
             control_port: default_control_port(),
             data_port: default_data_port(),
+            data_quic_port: default_data_quic_port(),
+            data_kcp_port: default_data_kcp_port(),
+            data_transport: TransportKind::Tcp,
+            data_transports: vec![],
             gateway_port: default_gateway_port(),
             api_port: default_api_port(),
             database_url: default_db(),
@@ -111,6 +132,28 @@ impl ServerConfig {
         p2p_common::default_config_beside_exe("server.toml")
     }
 
+    pub fn enabled_data_transports(&self) -> Vec<TransportKind> {
+        let mut out = Vec::new();
+        out.push(self.data_transport);
+        for t in &self.data_transports {
+            if !out.contains(t) {
+                out.push(*t);
+            }
+        }
+        if !out.contains(&TransportKind::Tcp) {
+            out.push(TransportKind::Tcp);
+        }
+        out
+    }
+
+    pub fn port_for_transport(&self, t: TransportKind) -> u16 {
+        match t {
+            TransportKind::Tcp => self.data_port,
+            TransportKind::Quic => self.data_quic_port,
+            TransportKind::Kcp => self.data_kcp_port,
+        }
+    }
+
     pub fn load(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         if path.exists() {
@@ -121,7 +164,7 @@ impl ServerConfig {
         let body = toml::to_string_pretty(&cfg)?;
         let content = format!(
             "# NexusGate Server 配置文件（首次运行自动生成）\n\
-             # 请按需修改端口、管理员账号与 jwt_secret。\n\
+             # data_transport: tcp | quic | kcp（edge↔server 数据面）\n\
              #\n\
              {body}"
         );
@@ -141,7 +184,6 @@ impl ServerConfig {
         Ok(())
     }
 
-    /// Persist current config to TOML (secrets included; file must stay host-protected).
     pub fn save(&self, path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
         let path = path.as_ref();
         let body = toml::to_string_pretty(self)?;

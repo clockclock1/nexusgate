@@ -3,6 +3,10 @@ token = "REPLACE_WITH_TOKEN_FROM_ADMIN"
 server = "127.0.0.1"
 control_port = 7000
 data_port = 7001
+data_quic_port = 7002
+data_kcp_port = 7003
+# 对外声明支持的数据面（空则默认 tcp+quic+kcp）
+# transports = ["tcp", "quic", "kcp"]
 name = "demo-edge"
 
 # Hub 字段必须写在 [[services]] 之前（TOML 数组表之后的裸键会归入该 service）

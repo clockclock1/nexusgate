@@ -14,12 +14,12 @@ where
     let (mut b_r, mut b_w) = tokio::io::split(b);
 
     let a_to_b = async {
-        let n = tokio::io::copy(&mut a_r, &mut b_w).await?;
+        let n = tokio::io::copy_buf(&mut tokio::io::BufReader::with_capacity(64 * 1024, &mut a_r), &mut b_w).await?;
         let _ = b_w.shutdown().await;
         Ok::<u64, std::io::Error>(n)
     };
     let b_to_a = async {
-        let n = tokio::io::copy(&mut b_r, &mut a_w).await?;
+        let n = tokio::io::copy_buf(&mut tokio::io::BufReader::with_capacity(64 * 1024, &mut b_r), &mut a_w).await?;
         let _ = a_w.shutdown().await;
         Ok::<u64, std::io::Error>(n)
     };

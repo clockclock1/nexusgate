@@ -95,6 +95,41 @@ impl fmt::Display for ProtocolKind {
     }
 }
 
+/// Wire transport between edge ↔ server data plane (not the proxied service protocol).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportKind {
+    #[default]
+    Tcp,
+    Quic,
+    Kcp,
+}
+
+impl TransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Quic => "quic",
+            Self::Kcp => "kcp",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "tcp" => Some(Self::Tcp),
+            "quic" | "http3" => Some(Self::Quic),
+            "kcp" => Some(Self::Kcp),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for TransportKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Connection path preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -226,5 +261,12 @@ mod tests {
     fn protocol_kind_roundtrip() {
         assert_eq!(ProtocolKind::parse("TCP"), Some(ProtocolKind::Tcp));
         assert_eq!(ProtocolKind::Http.as_str(), "http");
+    }
+
+    #[test]
+    fn transport_kind_roundtrip() {
+        assert_eq!(TransportKind::parse("QUIC"), Some(TransportKind::Quic));
+        assert_eq!(TransportKind::Kcp.as_str(), "kcp");
+        assert_eq!(TransportKind::default(), TransportKind::Tcp);
     }
 }

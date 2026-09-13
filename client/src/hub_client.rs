@@ -72,6 +72,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
             hostname: cfg.name.clone(),
             version: Some(env!("CARGO_PKG_VERSION").into()),
             labels: vec!["role:edge".into()],
+            transports: vec![],
         })
         .await?;
 

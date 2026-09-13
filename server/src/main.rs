@@ -28,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         control = config.control_port,
         data = config.data_port,
+        data_quic = config.data_quic_port,
+        data_kcp = config.data_kcp_port,
+        data_transport = %config.data_transport,
         gateway = config.gateway_port,
         api = config.api_port,
         "starting p2p-server"
@@ -39,7 +42,6 @@ async fn main() -> anyhow::Result<()> {
 
     let listen = config.listen.clone();
     let control_addr: SocketAddr = format!("{}:{}", listen, config.control_port).parse()?;
-    let data_addr: SocketAddr = format!("{}:{}", listen, config.data_port).parse()?;
     let gateway_addr: SocketAddr = format!("{}:{}", listen, config.gateway_port).parse()?;
     let api_addr: SocketAddr = format!("{}:{}", listen, config.api_port).parse()?;
 
@@ -49,12 +51,35 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(error = %e, "control plane exited");
         }
     });
-    let s2 = state.clone();
-    tokio::spawn(async move {
-        if let Err(e) = data_plane::run_data_plane(s2, data_addr).await {
-            tracing::error!(error = %e, "data plane exited");
+    let listen_host = listen.clone();
+    for t in config.enabled_data_transports() {
+        let port = config.port_for_transport(t);
+        let addr: SocketAddr = format!("{listen_host}:{port}").parse()?;
+        let s = state.clone();
+        match t {
+            p2p_common::TransportKind::Tcp => {
+                tokio::spawn(async move {
+                    if let Err(e) = data_plane::run_data_plane(s, addr).await {
+                        tracing::error!(error = %e, "tcp data plane exited");
+                    }
+                });
+            }
+            p2p_common::TransportKind::Quic => {
+                tokio::spawn(async move {
+                    if let Err(e) = data_plane::run_quic_data_plane(s, addr).await {
+                        tracing::error!(error = %e, "quic data plane exited");
+                    }
+                });
+            }
+            p2p_common::TransportKind::Kcp => {
+                tokio::spawn(async move {
+                    if let Err(e) = data_plane::run_kcp_data_plane(s, addr).await {
+                        tracing::error!(error = %e, "kcp data plane exited");
+                    }
+                });
+            }
         }
-    });
+    }
     let s3 = state.clone();
     tokio::spawn(async move {
         if let Err(e) = gateway::run_tcp_gateway(s3, gateway_addr).await {

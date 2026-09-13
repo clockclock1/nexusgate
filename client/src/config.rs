@@ -1,3 +1,4 @@
+use p2p_common::TransportKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -11,19 +12,25 @@ pub struct EdgeConfig {
     pub control_port: u16,
     #[serde(default = "default_data_port")]
     pub data_port: u16,
+    #[serde(default = "default_data_quic_port")]
+    pub data_quic_port: u16,
+    #[serde(default = "default_data_kcp_port")]
+    pub data_kcp_port: u16,
+    #[serde(default)]
+    pub data_transport: TransportKind,
+    #[serde(default)]
+    pub transports: Vec<TransportKind>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub services: Vec<LocalService>,
 
-    /// When set, also dial Admin Hub for multi-server management mesh.
     #[serde(default)]
     pub hub_host: Option<String>,
     #[serde(default = "default_hub_control_port")]
     pub hub_control_port: u16,
     #[serde(default = "default_hub_data_port")]
     pub hub_data_port: u16,
-    /// Shared Hub token (same as admin.toml hub_token). Falls back to `token` if empty.
     #[serde(default)]
     pub hub_token: Option<String>,
 }
@@ -46,6 +53,12 @@ fn default_control_port() -> u16 {
 fn default_data_port() -> u16 {
     7001
 }
+fn default_data_quic_port() -> u16 {
+    7002
+}
+fn default_data_kcp_port() -> u16 {
+    7003
+}
 fn default_proto() -> String {
     "tcp".into()
 }
@@ -64,6 +77,10 @@ impl Default for EdgeConfig {
             server: default_server(),
             control_port: default_control_port(),
             data_port: default_data_port(),
+            data_quic_port: default_data_quic_port(),
+            data_kcp_port: default_data_kcp_port(),
+            data_transport: TransportKind::Tcp,
+            transports: vec![TransportKind::Tcp, TransportKind::Quic, TransportKind::Kcp],
             name: Some("demo-edge".into()),
             services: vec![LocalService {
                 service_id: "web".into(),
@@ -84,12 +101,26 @@ impl EdgeConfig {
         p2p_common::default_config_beside_exe("edge.toml")
     }
 
+    pub fn advertised_transports(&self) -> Vec<TransportKind> {
+        if self.transports.is_empty() {
+            vec![TransportKind::Tcp, TransportKind::Quic, TransportKind::Kcp]
+        } else {
+            self.transports.clone()
+        }
+    }
+
+    pub fn port_for_transport(&self, t: TransportKind) -> u16 {
+        match t {
+            TransportKind::Tcp => self.data_port,
+            TransportKind::Quic => self.data_quic_port,
+            TransportKind::Kcp => self.data_kcp_port,
+        }
+    }
+
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         Ok(p2p_common::load_toml_config(path)?)
     }
 
-    /// Load config; if missing, write a default template next to the path and return Err
-    /// so the user can edit credentials before connecting.
     pub fn load_or_init(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         if path.exists() {
@@ -100,9 +131,8 @@ impl EdgeConfig {
         let body = toml::to_string_pretty(&cfg)?;
         let content = format!(
             "# NexusGate Edge 配置文件（首次运行自动生成）\n\
-             # 请修改 node_id / token / server，以及 [[services]] 本地回源地址后重新运行。\n\
-             # token 在服务端管理面板「创建节点」后获得。\n\
-             # 若启用 Admin Hub：把 hub_host/hub_token 等写在 [[services]] 之前。\n\
+             # data_transport / transports: tcp | quic | kcp\n\
+             # Hub 字段必须写在 [[services]] 之前。\n\
              #\n\
              {body}"
         );

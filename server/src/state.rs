@@ -36,6 +36,8 @@ pub struct OnlineNode {
     pub connected_at: Instant,
     pub last_seen: Instant,
     pub tx: mpsc::Sender<ControlMessage>,
+    /// Edge-advertised data-plane transports.
+    pub transports: Vec<p2p_common::TransportKind>,
 }
 
 pub struct PendingConnection {

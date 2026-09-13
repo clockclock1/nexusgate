@@ -55,6 +55,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 http = "1"
 http-body-util = "0.1"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+tokio_kcp = "0.9"
+pin-project-lite = "0.2"
 
 # Internal crates
 p2p-common = { path = "shared/common" }
