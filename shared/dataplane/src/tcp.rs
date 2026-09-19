@@ -144,29 +144,26 @@ mod splice {
     ) -> std::io::Result<usize> {
         loop {
             reader.readable().await?;
-            let result = reader.as_ref().try_io(Interest::READABLE, || {
-                let fd = reader.as_ref().as_raw_fd();
-                let n = unsafe {
-                    libc::splice(
-                        fd,
-                        std::ptr::null_mut(),
-                        pipe_w,
-                        std::ptr::null_mut(),
-                        PIPE_BUF,
-                        SPLICE_F_MOVE | SPLICE_F_NONBLOCK,
-                    )
-                };
-                if n < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(n as usize)
+            let fd = reader.as_ref().as_raw_fd();
+            let n = unsafe {
+                libc::splice(
+                    fd,
+                    std::ptr::null_mut(),
+                    pipe_w,
+                    std::ptr::null_mut(),
+                    PIPE_BUF,
+                    SPLICE_F_MOVE | SPLICE_F_NONBLOCK,
+                )
+            };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::WouldBlock {
+                    reader.as_ref().clear_ready(Interest::READABLE);
+                    continue;
                 }
-            });
-            match result {
-                Ok(Ok(n)) => return Ok(n),
-                Ok(Err(e)) => return Err(e),
-                Err(_would_block) => continue,
+                return Err(err);
             }
+            return Ok(n as usize);
         }
     }
 
@@ -177,29 +174,26 @@ mod splice {
     ) -> std::io::Result<usize> {
         loop {
             writer.writable().await?;
-            let result = writer.as_ref().try_io(Interest::WRITABLE, || {
-                let fd = writer.as_ref().as_raw_fd();
-                let n = unsafe {
-                    libc::splice(
-                        pipe_r,
-                        std::ptr::null_mut(),
-                        fd,
-                        std::ptr::null_mut(),
-                        max,
-                        SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE,
-                    )
-                };
-                if n < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(n as usize)
+            let fd = writer.as_ref().as_raw_fd();
+            let n = unsafe {
+                libc::splice(
+                    pipe_r,
+                    std::ptr::null_mut(),
+                    fd,
+                    std::ptr::null_mut(),
+                    max,
+                    SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE,
+                )
+            };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::WouldBlock {
+                    writer.as_ref().clear_ready(Interest::WRITABLE);
+                    continue;
                 }
-            });
-            match result {
-                Ok(Ok(n)) => return Ok(n),
-                Ok(Err(e)) => return Err(e),
-                Err(_would_block) => continue,
+                return Err(err);
             }
+            return Ok(n as usize);
         }
     }
 }
