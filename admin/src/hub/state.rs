@@ -1,10 +1,13 @@
 use dashmap::DashMap;
 use p2p_common::{PathKind, PeerPathPurpose, PeerRole};
+use p2p_dataplane::PrefixedStream;
 use p2p_protocol::{ControlMessage, HubPeerInfo};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
+
+type HubDataIo = PrefixedStream<TcpStream>;
 
 #[derive(Clone)]
 pub struct HubPeerSession {
@@ -26,7 +29,7 @@ pub struct PendingPeerPath {
     pub purpose: PeerPathPurpose,
     pub path: PathKind,
     pub created_at: Instant,
-    pub stream_slot: Arc<tokio::sync::Mutex<Option<TcpStream>>>,
+    pub stream_slot: Arc<tokio::sync::Mutex<Option<HubDataIo>>>,
 }
 
 #[derive(Clone)]

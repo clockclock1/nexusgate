@@ -20,7 +20,8 @@ pub async fn run_edge(cfg: EdgeConfig) -> anyhow::Result<()> {
         "starting edge"
     );
 
-    // Join internal management mesh; publish local services there.
+    // Overlay must not block Hub: VIP wait can take tens of seconds (or fail on
+    // token/bootstrap mismatch). Visitor tunnels need Hub immediately.
     if cfg.overlay.enabled {
         let mut o = cfg.overlay.clone();
         o.role = p2p_overlay::OverlayRole::Node;
@@ -32,40 +33,40 @@ pub async fn run_edge(cfg: EdgeConfig) -> anyhow::Result<()> {
                 o.bootstrap.push(format!("{host}:{}", o.port));
             }
         }
-        match p2p_overlay::start_overlay(o).await {
-            Ok(mesh) => {
-                info!(vip = %mesh.vip(), "management mesh ready (edge)");
-                for svc in &cfg.services {
-                    match mesh
-                        .publish_register_service(
-                            &svc.service_id,
-                            &svc.name,
-                            &svc.protocol,
-                            &svc.local_addr,
-                        )
-                        .await
-                    {
-                        Ok(()) => info!(
-                            service = %svc.service_id,
-                            "registered service on management mesh"
-                        ),
-                        Err(e) => warn!(
-                            error = %e,
-                            service = %svc.service_id,
-                            "mesh service register failed (Hub register still runs)"
-                        ),
+        let services = cfg.services.clone();
+        tokio::spawn(async move {
+            match p2p_overlay::start_overlay(o).await {
+                Ok(mesh) => {
+                    info!(vip = %mesh.vip(), "management mesh ready (edge)");
+                    for svc in &services {
+                        match mesh
+                            .publish_register_service(
+                                &svc.service_id,
+                                &svc.name,
+                                &svc.protocol,
+                                &svc.local_addr,
+                            )
+                            .await
+                        {
+                            Ok(()) => info!(
+                                service = %svc.service_id,
+                                "registered service on management mesh"
+                            ),
+                            Err(e) => warn!(
+                                error = %e,
+                                service = %svc.service_id,
+                                "mesh service register failed (Hub register still runs)"
+                            ),
+                        }
                     }
-                }
-                // Keep mesh alive alongside Hub client.
-                tokio::spawn(async move {
                     let _mesh = mesh;
                     std::future::pending::<()>().await;
-                });
+                }
+                Err(e) => {
+                    warn!(error = %e, "management mesh failed; Hub-only management fallback");
+                }
             }
-            Err(e) => {
-                warn!(error = %e, "management mesh failed; Hub-only management fallback");
-            }
-        }
+        });
     }
 
     // Hub: visitor tunnels + transitional control (register still sent as backup).

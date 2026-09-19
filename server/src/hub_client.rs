@@ -93,14 +93,14 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
         })
         .await?;
 
-    if let Err(e) = crate::ports::report_mappings(state).await {
-        warn!(error = %e, "report mappings failed");
-    }
-
     let api_port = cfg.api_port;
     let hub_host = hub_host.to_string();
     let (tx, mut rx, handle) = session.into_channels(256);
     *state.hub_tx.write() = Some(tx.clone());
+
+    if let Err(e) = crate::ports::report_mappings(state).await {
+        warn!(error = %e, "report mappings failed");
+    }
 
     while let Some(msg) = rx.recv().await {
         match msg {

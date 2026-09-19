@@ -93,6 +93,8 @@ where
         }
     };
     let (connection_id, data_token) = parse_data_handshake(&line)?;
+    // Keep any bytes past the handshake line (should be rare on direct dial).
+    let stream = p2p_dataplane::PrefixedStream::new(buf, stream);
 
     let entry = state
         .pending

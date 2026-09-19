@@ -2,8 +2,10 @@
 
 pub mod http;
 pub mod https;
+pub mod prefix;
 pub mod relay;
 pub mod tcp;
 pub mod udp;
 
+pub use prefix::PrefixedStream;
 pub use tcp::{copy_bidirectional, copy_bidirectional_tcp, COPY_BUF_SIZE};

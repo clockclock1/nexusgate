@@ -1,6 +1,7 @@
 use crate::hub::HubState;
-use p2p_dataplane::copy_bidirectional_tcp;
-use p2p_protocol::parse_data_handshake;
+use bytes::BytesMut;
+use p2p_dataplane::{copy_bidirectional, PrefixedStream};
+use p2p_protocol::{extract_line, parse_data_handshake};
 use p2p_transport::tune_tcp;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -31,15 +32,11 @@ pub async fn run_hub_data(state: HubState, addr: SocketAddr) -> anyhow::Result<(
 }
 
 async fn handle_data(state: HubState, mut stream: TcpStream) -> anyhow::Result<()> {
-    let mut buf = vec![0u8; 512];
-    let n = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
-        .await
-        .map_err(|_| anyhow::anyhow!("data handshake timeout"))??;
-    if n == 0 {
-        anyhow::bail!("empty data handshake");
-    }
-    let line = std::str::from_utf8(&buf[..n]).map_err(|e| anyhow::anyhow!("handshake utf8: {e}"))?;
-    let (cid, token) = parse_data_handshake(line)?;
+    // Line-framed handshake. A single read(N) can swallow visitor bytes that
+    // were coalesced behind `DATA ...\n` on the same TCP segment (server may
+    // write handshake then immediately forward the public request).
+    let (cid, token, leftover) = read_handshake_line(&mut stream).await?;
+    let stream = PrefixedStream::new(leftover, stream);
 
     let slot = {
         let pending = state
@@ -66,7 +63,34 @@ async fn handle_data(state: HubState, mut stream: TcpStream) -> anyhow::Result<(
     if let Some((peer, stream)) = maybe_pair {
         state.pending_paths.remove(&cid);
         info!(%cid, "hub relay bridging peers");
-        let _ = copy_bidirectional_tcp(peer, stream).await;
+        let _ = copy_bidirectional(peer, stream).await;
     }
     Ok(())
+}
+
+async fn read_handshake_line(
+    stream: &mut TcpStream,
+) -> anyhow::Result<(String, String, BytesMut)> {
+    let mut buf = BytesMut::with_capacity(256);
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(deadline);
+    let line = loop {
+        tokio::select! {
+            _ = &mut deadline => anyhow::bail!("data handshake timeout"),
+            n = stream.read_buf(&mut buf) => {
+                let n = n?;
+                if n == 0 {
+                    anyhow::bail!("empty data handshake");
+                }
+                if let Some(line) = extract_line(&mut buf) {
+                    break line;
+                }
+                if buf.len() > 512 {
+                    anyhow::bail!("data handshake too large");
+                }
+            }
+        }
+    };
+    let (cid, token) = parse_data_handshake(&line)?;
+    Ok((cid, token, buf))
 }
