@@ -52,6 +52,9 @@ pub enum ControlMessage {
         /// Wire transports this edge supports for the data plane.
         #[serde(default)]
         transports: Vec<TransportKind>,
+        /// Server-only: `host:port` edges should dial for direct data (skip Hub :7101).
+        #[serde(default)]
+        data_endpoint: Option<String>,
     },
     RegisterService {
         service_id: String,
@@ -170,9 +173,13 @@ pub enum ControlMessage {
         /// For `purpose=data`: edge local service address (e.g. 127.0.0.1:8000).
         #[serde(default)]
         local_addr: Option<String>,
+        /// Admin-issued server↔edge data port for this mapping.
+        #[serde(default)]
+        data_port: Option<u16>,
     },
 
     /// Hub → both peers: dial Hub data port (relay) or use candidates (p2p).
+    /// When `data_endpoint` is set, edge should try that address first (direct).
     PeerPathOffer {
         request_id: String,
         connection_id: String,
@@ -185,6 +192,9 @@ pub enum ControlMessage {
         /// For tunnel data: local service the edge should dial.
         #[serde(default)]
         local_addr: Option<String>,
+        /// Server TCP data endpoint (`host:port`) for edge direct dial.
+        #[serde(default)]
+        data_endpoint: Option<String>,
     },
 
     /// Browser/Admin → Server (via Hub control): forward an HTTP management call.
@@ -209,6 +219,39 @@ pub enum ControlMessage {
         #[serde(default)]
         error: Option<String>,
     },
+
+    /// Server → Hub: current mappings. `data_port` may be empty; Hub fills it.
+    ReportMappings {
+        mappings: Vec<PortBinding>,
+    },
+
+    /// Hub → Server: ports to bind now. Server opens nothing until this arrives.
+    ApplyPorts {
+        bindings: Vec<PortBinding>,
+    },
+}
+
+/// One mapping: one visitor port + one server↔edge data port.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortBinding {
+    pub route_id: String,
+    pub node_id: String,
+    pub visitor_port: u16,
+    #[serde(default)]
+    pub data_port: Option<u16>,
+    #[serde(default = "default_proto")]
+    pub protocol: String,
+    #[serde(default)]
+    pub local_addr: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_proto() -> String {
+    "tcp".into()
+}
+fn default_enabled() -> bool {
+    true
 }
 
 impl ControlMessage {
@@ -238,6 +281,8 @@ impl ControlMessage {
             Self::PeerPathOffer { .. } => "PEER_PATH_OFFER",
             Self::MgmtForward { .. } => "MGMT_FORWARD",
             Self::MgmtForwardResult { .. } => "MGMT_FORWARD_RESULT",
+            Self::ReportMappings { .. } => "REPORT_MAPPINGS",
+            Self::ApplyPorts { .. } => "APPLY_PORTS",
         }
     }
 

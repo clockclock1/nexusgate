@@ -44,7 +44,8 @@ Independent of overlay. Current tunnel path still uses Admin Hub data bridge (`O
 |-------|------|-------|---------|
 | Admin | 8088 | UI | Web panel |
 | Admin / Server / Edge | **51820** UDP | A | Overlay mesh |
-| Admin | 7100 / 7101 | transitional | Hub control / data |
+| Admin | 7100 / 7101 | transitional | Hub control / data (fallback relay) |
+| Server | **7001** TCP | B | Edge direct data dial (preferred over Hub :7101) |
 | Server | 8080 / 8443 / 8444 | B | Penetration TCP / QUIC / KCP entry |
 | Server | api @ 127.0.0.1:3000 | mgmt | Localhost API |
 | Edge | — | — | No public listen |
@@ -64,4 +65,6 @@ Panel `/api` preference order:
 3. Direct HTTP to `api_upstream`
 
 Edge service register: mesh `CtrlRegisterService` first; Hub `REGISTER_SERVICE` still sent as backup.
-Visitor tunnels still use Hub data `:7101`.
+Visitor tunnels: Admin issues one visitor port and one server↔edge data port per mapping (`ApplyPorts`). Server binds nothing until that plan arrives. Edge dials `advertise_host:data_port`. Hub `:7101` is fallback only.
+
+Interactive walkthrough: [architecture-flows.html](./architecture-flows.html).

@@ -48,6 +48,7 @@ export interface RouteInfo {
   route_id: string
   name: string
   public_port: number
+  data_port?: number | null
   protocol: ServiceProtocol
   node_id: string
   node_name?: string

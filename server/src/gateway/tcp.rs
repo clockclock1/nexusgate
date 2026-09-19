@@ -2,7 +2,7 @@ use crate::state::{AppState, PendingTunnel};
 use p2p_common::{PeerPathPurpose, ProtocolKind};
 use p2p_dataplane::copy_bidirectional;
 use p2p_protocol::ControlMessage;
-use p2p_transport::{self as transport, set_nodelay};
+use p2p_transport::{self as transport, tune_tcp};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,7 +16,8 @@ pub async fn run_tcp_gateway(state: AppState, addr: SocketAddr) -> anyhow::Resul
     info!(%addr, entry = "tcp", "penetration gateway listening");
     loop {
         let (stream, peer) = listener.accept().await?;
-        set_nodelay(&stream, true);
+        let cfg = state.config.read().clone();
+        tune_tcp(&stream, cfg.tcp_nodelay, cfg.tcp_buffer_bytes);
         let state = state.clone();
         let listen_port = addr.port();
         tokio::spawn(async move {
@@ -117,6 +118,7 @@ where
         purpose: PeerPathPurpose::Data,
         prefer_p2p: true,
         local_addr: Some(local_addr.clone()),
+        data_port: rule.data_port,
     })?;
 
     state.push_log(

@@ -13,6 +13,8 @@ hub_listen = "0.0.0.0"
 hub_control_port = 7100
 hub_data_port = 7101
 hub_token = "change-me-hub-token"
+# 映射未填通讯端口时，从此端口起自动分配（一条映射一个）
+port_pool_start = 17000
 
 [overlay]
 enabled = true

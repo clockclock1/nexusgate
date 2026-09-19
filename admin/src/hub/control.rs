@@ -14,14 +14,14 @@ pub async fn run_hub_control(state: HubState, addr: SocketAddr) -> anyhow::Resul
         let (stream, peer) = listener.accept().await?;
         let state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_peer(state, stream).await {
+            if let Err(e) = handle_peer(state, stream, peer).await {
                 warn!(%peer, error = %e, "hub control session ended");
             }
         });
     }
 }
 
-async fn handle_peer(state: HubState, stream: TcpStream) -> anyhow::Result<()> {
+async fn handle_peer(state: HubState, stream: TcpStream, peer: SocketAddr) -> anyhow::Result<()> {
     let mut session = ControlSession::new(stream, HeartbeatConfig::default());
     session
         .send(ControlMessage::Hello {
@@ -75,6 +75,7 @@ async fn handle_peer(state: HubState, stream: TcpStream) -> anyhow::Result<()> {
             role,
             name: None,
             version: None,
+            advertise_host: Some(peer.ip().to_string()),
             connected_at: std::time::Instant::now(),
             tx: tx.clone(),
         },
@@ -99,6 +100,7 @@ async fn handle_hub_msg(state: &HubState, from_id: &str, msg: ControlMessage) ->
         ControlMessage::Register {
             hostname,
             version,
+            data_endpoint,
             ..
         } => {
             if let Some(mut p) = state.peers.get_mut(from_id) {
@@ -108,8 +110,14 @@ async fn handle_hub_msg(state: &HubState, from_id: &str, msg: ControlMessage) ->
                 if version.is_some() {
                     p.version = version;
                 }
+                if let Some(ep) = data_endpoint {
+                    p.advertise_host = Some(host_only(&ep));
+                }
             }
             state.broadcast_roster();
+        }
+        ControlMessage::ReportMappings { mappings } => {
+            state.issue_ports(from_id, mappings);
         }
         ControlMessage::OpenPeerPath {
             request_id,
@@ -117,6 +125,7 @@ async fn handle_hub_msg(state: &HubState, from_id: &str, msg: ControlMessage) ->
             purpose,
             prefer_p2p,
             local_addr,
+            data_port,
         } => {
             if let Err(e) = state
                 .open_peer_path(
@@ -126,6 +135,7 @@ async fn handle_hub_msg(state: &HubState, from_id: &str, msg: ControlMessage) ->
                     purpose,
                     prefer_p2p,
                     local_addr,
+                    data_port,
                 )
                 .await
             {
@@ -211,4 +221,14 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn host_only(endpoint: &str) -> String {
+    let ep = endpoint.trim();
+    if let Some((host, _port)) = ep.rsplit_once(':') {
+        if !host.is_empty() && !host.contains(':') {
+            return host.to_string();
+        }
+    }
+    ep.to_string()
 }

@@ -7,6 +7,7 @@ pub mod data_plane;
 pub mod db;
 pub mod gateway;
 pub mod hub_client;
+pub mod ports;
 pub mod state;
 
 pub use config::ServerConfig;

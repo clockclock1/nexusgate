@@ -1,449 +1,402 @@
 # NexusGate
 
-高性能、**P2P 优先**的内网穿透与 Overlay Network：Rust Super Node / Edge 客户端 + 独立 React 管理控制台。
+内网穿透：外面的人访问你**公网机器上的端口**，流量转到**内网机器上的本地服务**。
 
 仓库：[clockclock1/nexusgate](https://github.com/clockclock1/nexusgate)
 
+三个程序：
+
+| 程序 | 装在哪 | 干什么 |
+|------|--------|--------|
+| `p2p-admin` | 管理机（常和公网机同一台，也可以分开） | 网页面板；给服务端/客户端一个接入口 |
+| `p2p-server` | 有公网 IP 的机器 | 对外开放映射端口；本机管理接口不对外 |
+| `p2p-edge` | 内网机器 | 连管理机；把本地服务接到隧道上 |
+
 ```text
-公网 Client ──► Server Gateway ──► Control CONNECT ──► Edge ──► 内网服务
-                     │                    │
-                     └──── Data 1:1 绑定 ──┘
+访客 ──► 服务端公网端口（默认 8080）──隧道──► 客户端本机服务（例如 127.0.0.1:8000）
+
+管理网页 ──► 管理端 :8088
+服务端 / 客户端 ──► 主动连管理端（不需要给内网机器开公网端口）
 ```
 
-## 特性
+两件事不要混：
 
-- **Control / Data 分离**：控制通道只传信令，业务字节走独立 1:1 Data Connection
-- **严格 1:1 映射**：`PublicConn ↔ DataConn ↔ LocalConn`，不做传统多路复用大 Tunnel
-- **P2P First / Relay 兜底**：架构预留 NAT 穿越与路径切换（当前 MVP 已跑通 Relay）
-- **Super Node**：Server 同时承担 Control、Data、TCP Gateway、Relay、Management API
-- **管理面**：JWT + RBAC、SQLite 持久化、REST + WebSocket 实时状态
-- **独立前端**：`web/` 单独构建与发布，不与二进制强耦合
-
-## 架构与技术
-
-### 组件
-
-| 目录 | 组件 | 说明 |
-|------|------|------|
-| `server/` | `p2p-server` | 公网 Super Node + API |
-| `client/` | `p2p-edge` | 内网 Edge 节点 |
-| `web/` | React Admin | 管理控制台（Vite + Ant Design） |
-| `shared/` | 协议库 | framing / control / dataplane / security 等 |
-
-### 关键设计
-
-1. Edge 与 Server 建立长期 **Control Session**（长度前缀 JSON：`HELLO` / `AUTH` / `HEARTBEAT` / `CONNECT` …）
-2. 公网访问打到 Server **Gateway**，按 Route 匹配目标 Edge / 本地地址
-3. Server 生成 `connection_id` + `data_token`，经 Control 下发 `CONNECT`
-4. Edge 拨本地服务，并向 Server Data 口发送 `DATA {cid} {token}\n`
-5. Server 绑定 Public ↔ Data，之后 **RAW TCP 双向拷贝**（`tokio::io::copy`）
-
-### 技术栈
-
-- **Rust**：Tokio、Axum、SQLx(SQLite)、DashMap、Tracing、JWT / bcrypt
-- **前端**：React 18、TypeScript、Vite、Ant Design、ECharts、Zustand
-- **部署**：`ng` 一键管理脚本、二进制发布、Docker / Compose、Systemd、Nginx、Kubernetes
-
-默认端口：
-
-| 端口 | 用途 |
-|------|------|
-| `3000` | Management API / WebSocket |
-| `7000` | Control |
-| `7001` | Data |
-| `8080` | TCP Gateway（Route `public_port` 需与之对齐） |
-| `8088` | Compose 中 Web 面板映射口（可选） |
-
-默认管理员：`admin` / `admin123`
+1. **管系统**：面板登录、改配置、客户端上报本地服务。走管理端接入口，打不通时管理端帮忙转。
+2. **给人访问**：访客只打服务端映射端口，不走上面那条管理通道。
 
 ---
 
-## 推荐安装（Linux `ng` 管理脚本）
+## 端口一览
 
-生产环境推荐用简称命令 **`ng`** 管理服务端/客户端：支持安装、启停、配置、从 GitHub 更新、完全卸载，并写入 **systemd 开机自启**。
+| 端口 | 谁监听 | 协议 | 用途 | 要不要对公网开放 |
+|------|--------|------|------|------------------|
+| `8088` | 管理端 | TCP | 网页面板 | 你要远程打开面板就放行 |
+| `7100` | 管理端 | TCP | 服务端/客户端接入（控制） | **必须**让服务端和客户端能连到 |
+| `7101` | 管理端 | TCP | 访客隧道中转（直连失败时回退） | **必须**（和 7100 一样） |
+| `7001` | 服务端 | TCP | 客户端直连数据口（优先于 7101） | **必须**让客户端能连到 |
+| `51820` | 管理端 | UDP | 内部联络（打洞/管理消息） | 建议放行，失败会退回 7100 |
+| `8080` | 服务端 | TCP | 访客入口（映射口） | 给外面的人用就放行 |
+| `8443` | 服务端 | UDP | 访客入口（QUIC） | 用到再放行 |
+| `8444` | 服务端 | UDP | 访客入口（KCP） | 用到再放行 |
+| `3000` | 服务端 | TCP | 本机管理接口 | **不要**对公网开放，只绑 `127.0.0.1` |
 
-### 1. 安装管理命令
+默认管理员：`admin` / `admin123`（装好后立刻改掉）。
+
+三端配置里的口令必须一致：
+
+- `hub_token`：管理端、服务端、客户端相同
+- `[overlay] token`：三端相同（内部联络用）
+- 服务端 `hub_server_id` 必须等于面板「服务端节点」的 `id`（默认都是 `default`）
+
+同一台电脑同时跑管理端和服务端时，UDP `51820` 只能被一个进程占用。服务端请改成别的端口（例如 `51821`），并把 `bootstrap` 指到管理端的 `主机:51820`。
+
+---
+
+## 推荐安装（Linux）
+
+在公网机和管理机上安装管理命令：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
+sudo ng
 ```
 
-安装后可随时唤起数字菜单（输入数字选择功能）：
-
-```bash
-ng                 # 自动 sudo，进入菜单
-sudo ng            # 同上
-```
-
-菜单示例：
-
-```text
-======== NexusGate 管理菜单 ========
-  1) 安装服务端
-  2) 安装客户端
-  3) 更新服务端
-  ...
-  0) 退出
-请输入数字选择功能:
-```
-
-也可从本地仓库安装：
-
-```bash
-sudo bash scripts/install-ng.sh
-```
-
-### 2. 安装并启动服务端（公网机器）
-
-```bash
-sudo ng install-server
-```
-
-流程：
-
-1. 从 GitHub Release 下载最新 `nexusgate-server-linux-amd64|arm64`
-2. **逐项交互配置**（监听地址、端口、管理员账号、JWT、P2P/中继等；回车保留默认）
-3. 确认后写入 systemd 并启用开机自启、立即启动
-
-默认值一般为 API `3000` / Control `7000` / Data `7001` / Gateway `8080`，管理员 `admin` / `admin123`。
-
-### 2.1 安装管理面板（通常与服务端同机）
+### 1. 管理端
 
 ```bash
 sudo ng install-web
 ```
 
-流程：
+向导里确认：面板端口 `8088`、`hub_token`、内部联络 token、固定内部地址（默认 `10.88.0.1`）。
 
-1. 下载 Release 中的 `nexusgate-admin-linux-amd64|arm64`（**内嵌前端**的 Rust 小服务）
-2. 逐项配置面板端口（默认 `8088`）与 API 反代地址（默认 `127.0.0.1:3000`）
-3. 启动 `nexusgate-web.service`：托管页面并反代 `/api/`、`/ws/` 到服务端
+浏览器打开 `http://<管理机IP>:8088`。
 
-浏览器访问：`http://<服务器IP>:8088`（账号同服务端管理员）。
-
-也可：`sudo ng config-web` / `sudo ng update-web` / `sudo ng uninstall-web`。
-
-本地也可直接运行（需先 `cd web && npm ci && npm run build`）：
+### 2. 服务端（公网机）
 
 ```bash
-cargo run -p p2p-admin --release -- --config admin/config/admin.toml
+sudo ng install-server
 ```
 
-### 3. 安装并启动客户端（内网机器）
+必填：
+
+- `hub_host` = 管理机 IP（管理端和服务端同一台就填 `127.0.0.1`）
+- `hub_token` 与管理端相同
+- `hub_server_id` = `default`（和面板里的服务端 id 一致）
+- 内部联络 `bootstrap` = `管理机IP:51820`
+- 映射口默认 TCP `8080`
+
+管理接口只在本机 `127.0.0.1:3000`，面板通过管理通道访问它，不必把 3000 暴露到公网。
+
+### 3. 在面板里登记客户端
+
+1. 登录面板
+2. 「节点」里新建节点，记下返回的 **node_id** 和 **token**（token 只显示一次）
+3. 新建映射：公网端口 `8080` → 这个节点 → 服务 id（要和客户端配置里的 `service_id` 相同，例如 `web`）
+
+如果创建映射时客户端还没上报本地地址，等客户端上线后再保存一次映射（或在面板里改一下再保存）。否则隧道可能连到错误的本机地址。
+
+### 4. 客户端（内网机）
 
 ```bash
 sudo ng install-client
 ```
 
-同样先下载，再**逐项填写** `node_id` / `token` / `server` 与本地服务映射，最后确认自启。
+必填：
 
-`node_id` / `token` 在服务端管理面板「创建节点」后获得（或调 API `/api/nodes`）。若安装时暂未拿到 token，可稍后：
+- `node_id` / `token`：面板里刚创建的
+- `hub_host` = 管理机 IP
+- `hub_token` 与管理端相同
+- 内部联络 `bootstrap` = `管理机IP:51820`
+- `[[services]]`：`service_id` 与映射一致，`local_addr` 是这台机器上的真实服务，例如 `127.0.0.1:8000`
+
+### 5. 验证
+
+面板「服务端节点 / Hub」里应能看到服务端和客户端都在线。
+
+在内网机上先确认本地服务本身能开：
 
 ```bash
-sudo ng config-client
-sudo ng restart client
+curl http://127.0.0.1:8000/
 ```
 
-### 4. 日常运维
+再从任意能访问公网机的地方访问映射口：
 
 ```bash
-sudo ng                 # 数字菜单（除 0 退出外，操作完回菜单）
+curl http://<公网机IP>:8080/
+```
+
+应得到内网服务的内容。
+
+### 日常命令
+
+```bash
 sudo ng start all
 sudo ng stop server
 sudo ng restart client
-sudo ng update-server      # 拉 GitHub 最新服务端并重启
+sudo ng update-server
 sudo ng update-client
 sudo ng update-web
-sudo ng config-server      # 备用：CLI 改服务端（推荐在管理面板 Settings/Server）
-sudo ng config-client      # 逐项改客户端配置
-sudo ng config-web         # 逐项改管理面板端口/反代
-sudo ng show-config        # 查看当前配置（可加 server|client|web）
+sudo ng show-config
 sudo ng logs server
-sudo ng uninstall-client   # 完全卸载客户端
-sudo ng uninstall-server   # 完全卸载服务端（含数据）
-sudo ng uninstall-web      # 完全卸载管理面板
-sudo ng uninstall-all      # 清空全部组件与数据
-sudo ng uninstall-ng       # 仅卸载 ng 管理脚本
-sudo ng self-update        # 更新 ng 脚本自身
+sudo ng logs client
+sudo ng logs web
 ```
 
-| 命令 | 说明 |
-|------|------|
-| `install-server` / `install-client` / `install-web` | 下载 → 逐项配置 → systemd 开机自启 |
-| `start` / `stop` / `restart [server\|client\|web\|all]` | 启停控制 |
-| `update-server` / `update-client` / `update-web` | 从 GitHub Release 更新 |
-| `config-server` / `config-client` / `config-web` | CLI 配置（服务端日常请用管理面板） |
-| `show-config [server\|client\|web\|all]` | 查看当前配置内容 |
-| `uninstall-server` / `uninstall-client` / `uninstall-web` | **完全卸载**（配置/数据/单元） |
-| `uninstall-all` | 删除 `/opt/nexusgate`、systemd、系统用户 |
-| `uninstall-ng` | 仅卸载管理脚本 `ng`（保留已装组件） |
-| `status` / `logs` | 状态与日志 |
-| `self-update` | 更新管理脚本 |
-| `mirror` / `test-mirror` | 镜像源设置与探测 |
-
-落盘位置：
+文件位置：
 
 ```text
-/usr/local/bin/ng
+/opt/nexusgate/bin/p2p-admin
 /opt/nexusgate/bin/p2p-server
 /opt/nexusgate/bin/p2p-edge
+/opt/nexusgate/web/config/admin.toml
 /opt/nexusgate/server/config/server.toml
 /opt/nexusgate/client/config/edge.toml
-/opt/nexusgate/bin/p2p-admin
-/opt/nexusgate/web/config/admin.toml
-/opt/nexusgate/data/
-/etc/systemd/system/nexusgate-server.service
-/etc/systemd/system/nexusgate-edge.service
-/etc/systemd/system/nexusgate-web.service
 ```
 
-> 二进制安装/更新依赖 Release 资产名：`nexusgate-server-linux-amd64|arm64`、`nexusgate-edge-linux-*`、`nexusgate-admin-linux-*`。请先在仓库发布 Release（Actions 会自动挂载产物）。
-
-### GitHub 镜像源（国内网络）
-
-安装/更新会 **官方源优先，失败自动切换镜像重试**。也可指定优先镜像：
-
-```bash
-# 安装 ng 时就走镜像（并写入后续默认）
-NG_MIRROR=https://ghproxy.net/ curl -fsSL \
-  https://ghproxy.net/https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh \
-  | sudo -E bash
-
-# 已安装后设置
-sudo ng mirror          # 菜单选择镜像
-sudo ng test-mirror     # 探测官方/镜像是否可达
-
-# 临时指定
-NG_MIRROR=https://ghproxy.net/ sudo -E ng update-server
-```
-
-内置候选镜像包括：`ghproxy.net`、`mirror.ghproxy.com`、`ghfast.top`、`gh.ddlc.top`、`gitclone.com` 等。
+国内下载 GitHub 可加镜像，见下文「GitHub 镜像」。
 
 ---
 
-## 快速开始（源码开发）
+## 配置样例
 
-```bash
-# 1) Server
-cargo run -p p2p-server -- --config server/config/server.toml
+三台分开部署时，把 `HUB` 换成管理机 IP。
 
-# 2) Web
-cd web && npm ci && npm run dev
-# http://127.0.0.1:5173
+**管理端 `admin.toml`**
 
-# 3) 管理面板创建节点，把 node_id / token 写入 client/config/edge.toml
+```toml
+listen = "0.0.0.0"
+listen_port = 8088
+api_upstream = "127.0.0.1:3000"
+default_server = "default"
 
-# 4) Edge
-cargo run -p p2p-edge -- --config client/config/edge.toml
+hub_enabled = true
+hub_listen = "0.0.0.0"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "换成你自己的口令"
+
+[overlay]
+enabled = true
+port = 51820
+listen = "0.0.0.0"
+subnet_cidr = "10.88.0.0/16"
+token = "换成另一组口令"
+role = "server"
+node_id = "admin"
+fixed_vip = "10.88.0.1"
+create_tun = false
+
+[[servers]]
+id = "default"
+name = "公网服务端"
+api_upstream = "127.0.0.1:3000"
 ```
 
-创建 Service（本地地址例如 `127.0.0.1:8000`）与 Route（`public_port=8080`）后访问：
+`[[servers]].id` 必须等于服务端的 `hub_server_id`。`api_upstream` 只是管理通道失败时的备用直连地址；服务端 API 默认不对外，远程机器填了也连不上，正常走管理通道即可。
 
-```bash
-curl http://127.0.0.1:8080/
+**服务端 `server.toml`**
+
+```toml
+listen = "0.0.0.0"
+gateway_port = 8080
+gateway_quic_port = 8443
+gateway_kcp_port = 8444
+gateway_transports = ["tcp", "quic", "kcp"]
+api_port = 3000
+database_url = "sqlite://data/p2p.db"
+jwt_secret = "换成随机长字符串"
+admin_user = "admin"
+admin_password = "admin123"
+enable_relay = true
+enable_p2p = true
+
+hub_host = "管理机IP"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "与管理端 hub_token 相同"
+hub_server_id = "default"
+
+[overlay]
+enabled = true
+port = 51820
+listen = "0.0.0.0"
+token = "与管理端 overlay.token 相同"
+role = "server"
+node_id = "default"
+fixed_vip = "10.88.0.2"
+bootstrap = ["管理机IP:51820"]
+create_tun = false
 ```
 
-API 示例：
+和管理端装在同一台 Windows/Linux 上时，把服务端 `[overlay] port` 改成 `51821`，`bootstrap` 仍指向管理端的 `127.0.0.1:51820`。
 
-```bash
-TOKEN=$(curl -s -X POST http://127.0.0.1:3000/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin123"}' | jq -r .token)
+**客户端 `edge.toml`**
 
-curl -s -X POST http://127.0.0.1:3000/api/nodes \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"edge-1"}'
+```toml
+node_id = "面板里创建的 node_id"
+token = "面板里创建的 token"
+name = "家里的机器"
+
+hub_host = "管理机IP"
+hub_control_port = 7100
+hub_data_port = 7101
+hub_token = "与管理端 hub_token 相同"
+
+[overlay]
+enabled = true
+port = 51820
+listen = "0.0.0.0"
+token = "与管理端 overlay.token 相同"
+role = "node"
+node_id = "与上面的 node_id 相同"
+bootstrap = ["管理机IP:51820"]
+create_tun = false
+
+[[services]]
+service_id = "web"
+name = "local-web"
+protocol = "tcp"
+local_addr = "127.0.0.1:8000"
 ```
+
+`create_tun = true` 只在 Linux 上有用，并且需要 `CAP_NET_ADMIN`。Windows 保持 `false`：管理消息不依赖系统网卡。
+
+仓库里的现成样例：
+
+- `admin/config/admin.toml`
+- `server/config/server.toml`
+- `client/config/edge.toml`
 
 ---
 
-## 使用方式
+## Windows 本机三端联调
 
-### 1. 注册 Edge
+适合先确认程序能跑通。三个进程在同一台 Windows 上：
 
-1. 启动 Server
-2. 登录管理面板或调用 `/api/auth/login`
-3. 创建 Node，保存返回的 `node_id` 与一次性 `token`
-4. 写入 `client/config/edge.toml` 并启动 Edge
-5. 面板中节点状态变为 `online`
+1. 编译：
 
-### 2. 暴露内网服务
+```powershell
+cd web; npm ci; npm run build; cd ..
+cargo build --release --locked -p p2p-admin -p p2p-server -p p2p-edge
+```
 
-1. 在 Edge 所在机器准备本地服务（HTTP/TCP）
-2. 创建 **Service**：协议 + `local_addr`
-3. 创建 **Route**：`public_port`（当前需等于 Server `gateway_port`，默认 8080）→ Node → Service
-4. 公网访问 `http://<server-ip>:8080/`（或对应 TCP 客户端）
+2. 准备三份配置（注意服务端 UDP 用 `51821`，避免和管理端 `51820` 冲突），然后：
 
-### 3. 管理面板页面
+```powershell
+.\target\release\p2p-admin.exe --config admin.toml
+.\target\release\p2p-server.exe --config server.toml
+.\target\release\p2p-edge.exe --config edge.toml
+```
 
-Dashboard / Server / Nodes / Services / Routes / P2P / Connections / Traffic / Logs / Users / Settings
+3. 打开 `http://127.0.0.1:8088`，用 `admin` / `admin123` 登录。
+4. 创建节点，把 `node_id`、`token` 写进客户端配置后重启客户端。
+5. 客户端上线后再保存一次映射（公网端口 8080 → 该节点 → `service_id`）。
+6. 本机起一个 `127.0.0.1:8000` 的服务，访问 `http://127.0.0.1:8080/` 应得到同样内容。
 
-**日常服务端管理请在面板完成**（不再依赖改 TOML / `ng config-server`）：
-
-| 面板 | 能力 |
-|------|------|
-| 服务端节点 | 多 Super Node 注册 + Admin Hub 在线拓扑（server/edge dial 入） |
-| Nodes（客户端节点） | 当前服务端下：创建节点、改名/启用禁用、重置 Token、删除 |
-| Server（当前服务端） | 查看运行状态、编辑并持久化端口/P2P/中继、重启进程 |
-| Settings | 写入当前服务端 `server.toml`（监听、端口、JWT、P2P/中继） |
-| Users / Services / Routes | 账号与穿透业务 CRUD（作用域=当前选中的服务端） |
-
-主机级安装/更新/卸载仍用 `ng`。端口变更保存后需在 Server 页重启；systemd 单元需 `Restart=always`（`ng install-server` 已写入）。
-
-**Admin Hub（管理面板即 P2P 中枢）**
-
-- `p2p-admin` 监听 Hub Control `7100` / Data `7101`（`admin.toml`）
-- Super Node 配置 `hub_host` / `hub_token` / `hub_server_id` 后主动 dial 进 Hub
-- Edge 配置 `hub_host` / `hub_token` 后 dial 进 Hub，并尝试对所有在线服务端开通管理通道（**优先 P2P，失败则 Hub 中转**）
-- 面板访问 `/api` 时：若目标服务端已在 Hub 在线，走 `MGMT_FORWARD`；否则回退 HTTP `api_upstream`
-
-一个管理面板可通过顶栏切换多个服务端；每个服务端各自维护多台 Edge；Hub 侧则可看到全部 dial 入的服务端与客户端。
-
-实时数据通过 `/ws/dashboard`、`/ws/connections`、`/ws/traffic`、`/ws/logs` 推送（带 `server=` 选定上游）。
+2026-09-18 在本机实测：面板登录、服务端/客户端上线、映射口返回本地页面，结果为通过。
 
 ---
 
-## 其它部署方式
+## 虚拟机当管理端 + 服务端，Windows 当客户端
 
-### A. `ng` 脚本（推荐，见上文）
+这是本机实测通过的摆法（Debian `192.168.206.129`，Windows 出站去连虚拟机，不碰 Windows 入站防火墙）。
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
-sudo ng install-server
-sudo ng install-client
-```
+1. 虚拟机上启动 `p2p-admin`（`8088` / `7100` / `7101` / UDP `51820`）和 `p2p-server`（映射口 `8080`，本机 API `127.0.0.1:3000`）。
+2. 两进程在同一台虚拟机上时，服务端的内部联络端口改成 `51821`，`bootstrap` 填 `127.0.0.1:51820`。`hub_host` 填 `127.0.0.1`。
+3. Windows 浏览器打开 `http://192.168.206.129:8088`，登录后创建节点。
+4. Windows 的 `edge.toml`：`hub_host` 和 `bootstrap` 都填虚拟机地址 `192.168.206.129`（不要写 `127.0.0.1`）。
+5. Windows 上先起本地服务（例如 `127.0.0.1:8000`），再启动 `p2p-edge`。面板里看到客户端在线后，再保存映射（公网端口 `8080` → 该节点 → `service_id`）。
+6. 访问 `http://192.168.206.129:8080/`，应看到 Windows 上那个本地服务的内容。
 
-### B. Release 二进制
+2026-09-18 实测：面板在虚拟机、客户端在 Windows，`http://192.168.206.129:8080/` 返回了 Windows 本机页面。
 
-发布 GitHub Release 后，Actions 会上传多平台产物：
+反过来让虚拟机当客户端、Windows 当管理端时，还要在 Windows 防火墙放行 `7100/tcp`、`7101/tcp`、`51820/udp`。只放行 `8088` 不够。
 
-**Server / Edge**
+---
 
-- `nexusgate-server-windows-amd64.exe` / `nexusgate-edge-windows-amd64.exe`
-- `nexusgate-server-linux-amd64` / `nexusgate-edge-linux-amd64`
-- `linux-arm64` / `macos-amd64` / `macos-arm64` 等同理
+## 手工运行二进制
 
-**前端管理面板（独立二进制，内嵌静态资源）**
+从 [Releases](https://github.com/clockclock1/nexusgate/releases) 下载对应平台文件：
 
-- `nexusgate-admin-windows-amd64.exe` / `nexusgate-admin-linux-amd64` 等
-- 负责：托管 SPA + 反代 `/api`、`/ws` 到**可选多个**服务端 API
-- 同时作为 **Admin Hub**：服务端/客户端 P2P 接入（失败中转）
-- 本地管理接口：`/admin/api/servers`、`/admin/api/hub/*`
+- `nexusgate-admin-*`
+- `nexusgate-server-*`
+- `nexusgate-edge-*`
 
 ```bash
-./nexusgate-server-linux-amd64 --config server/config/server.toml
-./nexusgate-admin-linux-amd64 --config admin/config/admin.toml
-./nexusgate-edge-linux-amd64 --config client/config/edge.toml
+./nexusgate-admin-linux-amd64 --config admin.toml
+./nexusgate-server-linux-amd64 --config server.toml
+./nexusgate-edge-linux-amd64 --config edge.toml
 ```
 
-本地自行编译：
+源码编译：
 
 ```bash
 cd web && npm ci && npm run build && cd ..
 cargo build --release --locked -p p2p-server -p p2p-edge -p p2p-admin
 ```
 
-### C. Docker（GHCR）
+---
 
-镜像：
+## 面板里做什么
 
-```text
-ghcr.io/clockclock1/nexusgate-server
-ghcr.io/clockclock1/nexusgate-edge
-ghcr.io/clockclock1/nexusgate-web
-```
+| 页面 | 做什么 |
+|------|--------|
+| 登录 | 默认 `admin` / `admin123` |
+| 服务端节点 | 当前连的是哪台服务端；可看它是否已接入管理端 |
+| 节点 | 创建内网客户端，拿到 `node_id` / `token` |
+| 映射 / Routes | 公网端口 → 哪个客户端 → 哪个 `service_id` |
+| 服务 | 客户端上报的本地地址 |
 
-```bash
-docker run --rm -p 3000:3000 -p 7000:7000 -p 7001:7001 -p 8080:8080 \
-  -v nexusgate-data:/opt/nexusgate/data \
-  ghcr.io/clockclock1/nexusgate-server:latest
-```
-
-源码本地构建（多阶段）：
+创建节点也可以用接口（先登录拿 JWT）：
 
 ```bash
-docker build -t nexusgate-server .
+TOKEN=$(curl -s -X POST http://127.0.0.1:8088/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}' | jq -r .token)
+
+curl -s -X POST http://127.0.0.1:8088/api/nodes \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"edge-1","node_id":"edge-1"}'
 ```
 
-### D. Docker Compose
+---
+
+## GitHub 镜像（国内）
+
+```bash
+NG_MIRROR=https://ghproxy.net/ curl -fsSL \
+  https://ghproxy.net/https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh \
+  | sudo -E bash
+
+sudo ng mirror
+sudo ng test-mirror
+NG_MIRROR=https://ghproxy.net/ sudo -E ng update-server
+```
+
+---
+
+## 其它部署
+
+Docker / Compose / systemd / Nginx / Kubernetes 仍在 `deploy/`。端口以本文「端口一览」为准：对外主要是管理端 `8088/7100/7101` 和服务端映射口 `8080`，不要再按旧文档去开放服务端 `7000/7001/3000`。
 
 ```bash
 cd deploy/compose
 cp .env.example .env
-# 发布后可将 NEXUSGATE_VERSION 改为 v0.1.0
 docker compose up -d
 ```
-
-- API / Gateway：宿主机 `3000` / `8080`
-- Web：`http://127.0.0.1:8088`
-
-### E. Systemd（手动）
-
-更推荐直接用 `ng`（见上文「推荐安装」）。若手动部署：
-
-```bash
-sudo cp deploy/systemd/p2p-server.service /etc/systemd/system/nexusgate-server.service
-sudo cp deploy/systemd/p2p-edge.service /etc/systemd/system/nexusgate-edge.service
-# 按需修改 ExecStart 路径后：
-sudo systemctl enable --now nexusgate-server
-sudo systemctl enable --now nexusgate-edge
-```
-
-### F. Nginx 反代
-
-参考 `deploy/nginx/p2p-network.conf` 与 `deploy/nginx/web.conf`：
-
-- `/` → 前端静态资源
-- `/api/`、`/ws/` → Server `:3000`
-- Gateway / Control / Data 端口按需对公网放行
-
-### G. Kubernetes
-
-```bash
-kubectl apply -f deploy/kubernetes/namespace.yaml
-kubectl apply -f deploy/kubernetes/pvc.yaml
-kubectl apply -f deploy/kubernetes/deployment.yaml
-kubectl apply -f deploy/kubernetes/service.yaml
-```
-
-默认镜像 `ghcr.io/clockclock1/nexusgate-server:latest` 与 `ghcr.io/clockclock1/nexusgate-web:latest`。
-
----
-
-## CI / CD（GitHub Actions）
-
-参照 [Failover-Proxy workflows](https://github.com/clockclock1/Failover-Proxy/tree/main/.github/workflows)，在 **Publish Release** 时触发（与其相同的两套流水线）：
-
-| Workflow | 作用 |
-|----------|------|
-| `Build Executables` | 各平台先 `npm` 构建前端，再编译 Server / Edge / Admin（Admin 内嵌前端），产物挂到 Release |
-| `Docker Image` | Linux amd64/arm64 同样先构建前端再编译，再推送 server / edge / web 镜像到 GHCR |
-
-Release 资产示例：
-
-- `nexusgate-server-linux-amd64` / `nexusgate-edge-linux-amd64` / `nexusgate-admin-linux-amd64`
-- Windows / macOS / arm64 同理
-- 镜像：`ghcr.io/clockclock1/nexusgate-{server,edge,web}`
 
 ---
 
 ## 开发
 
 ```bash
-cargo check
-cargo test
-cargo clippy --workspace --all-targets
+cargo test -p p2p-overlay
+cargo build --release --locked -p p2p-admin -p p2p-server -p p2p-edge
 cd web && npm run build
 ```
 
-更多文档：
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/PROTOCOL.md](docs/PROTOCOL.md)
-- [docs/API.md](docs/API.md)
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+更多细节：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/PROTOCOL.md](docs/PROTOCOL.md)、[docs/API.md](docs/API.md)。
 
 ## License
 

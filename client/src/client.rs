@@ -80,4 +80,3 @@ pub async fn run_edge(cfg: EdgeConfig) -> anyhow::Result<()> {
 fn _unused_error_log(e: anyhow::Error) {
     error!(error = %e, "edge error");
 }
-

@@ -85,6 +85,7 @@ mod tests {
             node_id: NodeId::new("n1"),
             service_id: "svc".into(),
             local_addr: "127.0.0.1:8080".into(),
+            data_port: None,
             enabled: true,
             priority: 0,
         }

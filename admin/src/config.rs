@@ -36,6 +36,9 @@ pub struct AdminConfig {
     /// Shared token for servers/edges dialing into the Hub.
     #[serde(default = "default_hub_token")]
     pub hub_token: String,
+    /// First port Admin assigns when a mapping leaves 通讯端口 empty.
+    #[serde(default = "default_port_pool_start")]
+    pub port_pool_start: u16,
 
     /// Virtual overlay (management mesh). Admin is an equal Overlay Server.
     #[serde(default)]
@@ -60,6 +63,9 @@ fn default_hub_data_port() -> u16 {
 fn default_hub_token() -> String {
     "change-me-hub-token".into()
 }
+fn default_port_pool_start() -> u16 {
+    17000
+}
 fn default_true() -> bool {
     true
 }
@@ -82,6 +88,7 @@ impl Default for AdminConfig {
             hub_control_port: default_hub_control_port(),
             hub_data_port: default_hub_data_port(),
             hub_token: default_hub_token(),
+            port_pool_start: default_port_pool_start(),
             overlay: {
                 let mut o = p2p_overlay::OverlayConfig::default();
                 o.enabled = true;

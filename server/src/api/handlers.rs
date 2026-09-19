@@ -616,6 +616,7 @@ pub async fn list_routes(
                 "route_id": r.get::<String,_>("route_id"),
                 "name": r.get::<String,_>("name"),
                 "public_port": r.get::<i64,_>("public_port"),
+                "data_port": r.try_get::<Option<i64>,_>("data_port").ok().flatten(),
                 "protocol": r.get::<String,_>("protocol"),
                 "node_id": r.get::<String,_>("node_id"),
                 "service_id": r.get::<String,_>("service_id"),
@@ -632,6 +633,9 @@ pub async fn list_routes(
 pub struct RouteReq {
     pub name: String,
     pub public_port: u16,
+    /// Server↔edge data port. Empty → admin allocates one.
+    #[serde(default)]
+    pub data_port: Option<u16>,
     pub protocol: String,
     pub node_id: String,
     pub service_id: String,
@@ -649,11 +653,12 @@ pub async fn create_route(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO routes (route_id, name, public_port, protocol, node_id, service_id, enabled, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO routes (route_id, name, public_port, data_port, protocol, node_id, service_id, enabled, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&req.name)
     .bind(req.public_port as i64)
+    .bind(req.data_port.map(|p| p as i64))
     .bind(&req.protocol)
     .bind(&req.node_id)
     .bind(&req.service_id)
@@ -666,6 +671,7 @@ pub async fn create_route(
     crate::db::load_routes_into(&state.db, &state.routes)
         .await
         .map_err(AppError::internal)?;
+    let _ = crate::ports::report_mappings(&state).await;
     get_route(State(state), Path(id)).await
 }
 
@@ -691,10 +697,11 @@ pub async fn update_route(
     Json(req): Json<RouteReq>,
 ) -> Result<Json<Value>, AppError> {
     sqlx::query(
-        "UPDATE routes SET name=?, public_port=?, protocol=?, node_id=?, service_id=?, enabled=?, description=? WHERE route_id=?",
+        "UPDATE routes SET name=?, public_port=?, data_port=?, protocol=?, node_id=?, service_id=?, enabled=?, description=? WHERE route_id=?",
     )
     .bind(&req.name)
     .bind(req.public_port as i64)
+    .bind(req.data_port.map(|p| p as i64))
     .bind(&req.protocol)
     .bind(&req.node_id)
     .bind(&req.service_id)
@@ -707,6 +714,7 @@ pub async fn update_route(
     crate::db::load_routes_into(&state.db, &state.routes)
         .await
         .map_err(AppError::internal)?;
+    let _ = crate::ports::report_mappings(&state).await;
     get_route(State(state), Path(id)).await
 }
 
@@ -720,6 +728,7 @@ pub async fn delete_route(
         .await
         .map_err(AppError::internal)?;
     state.routes.remove(&id);
+    let _ = crate::ports::report_mappings(&state).await;
     Ok(Json(json!({ "ok": true })))
 }
 

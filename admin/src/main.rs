@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let default_server = cfg.default_server.clone();
 
     let hub = if cfg.hub_enabled {
-        let hub = HubState::new(cfg.hub_token.clone());
+        let hub = HubState::new(cfg.hub_token.clone(), cfg.port_pool_start);
         let control_addr = cfg.hub_control_addr()?;
         let data_addr = cfg.hub_data_addr()?;
         let h1 = hub.clone();

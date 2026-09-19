@@ -33,3 +33,22 @@ pub fn map_io(e: std::io::Error) -> Error {
 pub fn set_nodelay(stream: &tokio::net::TcpStream, on: bool) {
     let _ = stream.set_nodelay(on);
 }
+
+/// Default socket buffer for high-throughput tunnels (2 MiB).
+pub const DEFAULT_TCP_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+
+/// Tune a TCP stream: nodelay + optional SO_RCVBUF/SO_SNDBUF.
+pub fn tune_tcp(stream: &tokio::net::TcpStream, nodelay: bool, buffer_bytes: usize) {
+    set_nodelay(stream, nodelay);
+    if buffer_bytes == 0 {
+        return;
+    }
+    let sock = socket2::SockRef::from(stream);
+    let _ = sock.set_recv_buffer_size(buffer_bytes);
+    let _ = sock.set_send_buffer_size(buffer_bytes);
+}
+
+/// Convenience: nodelay on + default buffer size.
+pub fn tune_tcp_default(stream: &tokio::net::TcpStream) {
+    tune_tcp(stream, true, DEFAULT_TCP_BUFFER_BYTES);
+}

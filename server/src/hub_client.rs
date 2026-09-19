@@ -1,17 +1,21 @@
 //! Outbound connection from server node to Admin Hub (control + tunnel relay).
 //! Server does NOT listen on a control plane; Hub is the only management channel.
 
-use crate::gateway::complete_hub_tunnel;
+use crate::data_plane::{self, register_pending};
 use crate::state::AppState;
 use base64::Engine;
 use p2p_common::{PeerPathPurpose, PeerRole};
 use p2p_control::{ControlSession, HeartbeatConfig};
 use p2p_dataplane::copy_bidirectional;
 use p2p_protocol::{encode_data_handshake, ControlMessage};
+use p2p_transport::tune_tcp;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::{info, warn};
+
+/// How long the server waits for an edge direct dial before falling back to Hub.
+const DIRECT_WAIT: Duration = Duration::from_secs(4);
 
 pub async fn run_hub_client(state: AppState) {
     loop {
@@ -33,7 +37,7 @@ pub async fn run_hub_client(state: AppState) {
 async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
     let cfg = state.config.read().clone();
     let control_addr = format!("{}:{}", hub_host.trim(), cfg.hub_control_port);
-    let data_port = cfg.hub_data_port;
+    let hub_data_port = cfg.hub_data_port;
     let server_id = cfg
         .hub_server_id
         .clone()
@@ -43,9 +47,11 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
     if token.is_empty() {
         anyhow::bail!("hub_token empty");
     }
+    let data_endpoint = cfg.advertised_data_endpoint();
 
-    info!(%control_addr, %server_id, "connecting to admin hub");
+    info!(%control_addr, %server_id, ?data_endpoint, "connecting to admin hub");
     let stream = TcpStream::connect(&control_addr).await?;
+    tune_tcp(&stream, cfg.tcp_nodelay, cfg.tcp_buffer_bytes);
     let mut session = ControlSession::new(stream, HeartbeatConfig::default());
 
     let hello = session
@@ -83,8 +89,13 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
             version: Some(env!("CARGO_PKG_VERSION").into()),
             labels: vec!["role:server".into()],
             transports: vec![],
+            data_endpoint: data_endpoint.clone(),
         })
         .await?;
+
+    if let Err(e) = crate::ports::report_mappings(state).await {
+        warn!(error = %e, "report mappings failed");
+    }
 
     let api_port = cfg.api_port;
     let hub_host = hub_host.to_string();
@@ -156,6 +167,14 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
                     }
                 });
             }
+            ControlMessage::ApplyPorts { bindings } => {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = crate::ports::apply_port_plan(&state, bindings).await {
+                        warn!(error = %e, "apply port plan failed");
+                    }
+                });
+            }
             ControlMessage::PeerPathOffer {
                 request_id,
                 connection_id,
@@ -164,6 +183,7 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
                 purpose,
                 peer_node_id,
                 local_addr,
+                data_endpoint,
                 ..
             } => {
                 info!(
@@ -173,6 +193,7 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
                     ?path,
                     ?purpose,
                     ?local_addr,
+                    ?data_endpoint,
                     "hub peer path offer"
                 );
                 let hub_host = hub_host.clone();
@@ -181,7 +202,7 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
                     if let Err(e) = accept_peer_path(
                         state,
                         hub_host,
-                        data_port,
+                        hub_data_port,
                         request_id,
                         connection_id,
                         data_token,
@@ -206,21 +227,64 @@ async fn run_once(state: &AppState, hub_host: &str) -> anyhow::Result<()> {
 async fn accept_peer_path(
     state: AppState,
     hub_host: String,
-    data_port: u16,
+    hub_data_port: u16,
     request_id: String,
     connection_id: String,
     data_token: String,
     purpose: PeerPathPurpose,
 ) -> anyhow::Result<()> {
-    let mut data = TcpStream::connect(format!("{hub_host}:{data_port}")).await?;
-    let hs = encode_data_handshake(&connection_id, &data_token);
-    data.write_all(&hs).await?;
     match purpose {
         PeerPathPurpose::Data => {
-            complete_hub_tunnel(&state, &request_id, data).await?;
+            // Move visitor stream into pending so edge can dial data_plane directly.
+            let Some((_, tunnel)) = state.hub_tunnels.remove(&request_id) else {
+                anyhow::bail!("no pending tunnel for {request_id}");
+            };
+            let public = tunnel
+                .public
+                .lock()
+                .await
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("public stream already taken"))?;
+
+            register_pending(
+                &state,
+                connection_id.clone(),
+                data_token.clone(),
+                tunnel.node_id.clone(),
+                tunnel.local_addr.clone(),
+                tunnel.protocol.clone(),
+                public,
+            );
+
+            // Wait for direct dial; if still pending after timeout → Hub relay.
+            tokio::time::sleep(DIRECT_WAIT).await;
+            if state.pending.contains_key(&connection_id) {
+                info!(%connection_id, "direct dial timeout; falling back to hub-relay");
+                let mut data = TcpStream::connect(format!("{hub_host}:{hub_data_port}")).await?;
+                let cfg = state.config.read().clone();
+                tune_tcp(&data, cfg.tcp_nodelay, cfg.tcp_buffer_bytes);
+                let hs = encode_data_handshake(&connection_id, &data_token);
+                data.write_all(&hs).await?;
+                data_plane::bridge_hub_relay(
+                    &state,
+                    &connection_id,
+                    &request_id,
+                    data,
+                    &tunnel.protocol,
+                    &tunnel.node_id,
+                    &tunnel.local_addr,
+                )
+                .await?;
+            } else {
+                info!(%connection_id, "direct path consumed by edge (or cleaned up)");
+            }
         }
         PeerPathPurpose::Mgmt => {
-            // Keep relay leg alive for management mesh.
+            let mut data = TcpStream::connect(format!("{hub_host}:{hub_data_port}")).await?;
+            let cfg = state.config.read().clone();
+            tune_tcp(&data, cfg.tcp_nodelay, cfg.tcp_buffer_bytes);
+            let hs = encode_data_handshake(&connection_id, &data_token);
+            data.write_all(&hs).await?;
             let (a, b) = tokio::io::duplex(8);
             let _ = copy_bidirectional(data, a).await;
             drop(b);

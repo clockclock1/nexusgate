@@ -1,6 +1,6 @@
 use p2p_common::{PathKind, Result};
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +19,7 @@ pub struct PathProbeResult {
     pub probe_id: String,
 }
 
-/// Probe a candidate path. Relay is always "available"; P2P probes the scaffold.
+/// Probe a candidate path. Relay is always "available"; P2P is scaffold (always fail).
 pub async fn probe_path(req: PathProbeRequest) -> Result<PathProbeResult> {
     let start = Instant::now();
     let success = match req.path {
@@ -29,8 +29,6 @@ pub async fn probe_path(req: PathProbeRequest) -> Result<PathProbeResult> {
             false
         }
     };
-    // Simulate minimal work
-    tokio::time::sleep(Duration::from_millis(1)).await;
     Ok(PathProbeResult {
         connection_id: req.connection_id,
         path: req.path,

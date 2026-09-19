@@ -10,8 +10,7 @@ use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::net::TcpStream;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 use p2p_transport::IoStream;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,10 +55,8 @@ pub struct PendingConnection {
     pub node_id: String,
     pub local_addr: String,
     pub protocol: String,
-    pub public: Option<TcpStream>,
-    pub data: Option<TcpStream>,
+    pub public: Arc<tokio::sync::Mutex<Option<Box<dyn IoStream>>>>,
     pub created_at: Instant,
-    pub notify: Option<oneshot::Sender<()>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +103,9 @@ pub struct AppState {
     pub logs: Arc<parking_lot::RwLock<Vec<LogEntry>>>,
     pub event_tx: broadcast::Sender<serde_json::Value>,
     pub started_at: Instant,
+    /// Dynamically bound visitor/data listeners (`v:{port}` / `d:{port}`).
+    pub listeners: Arc<tokio::sync::Mutex<crate::ports::ListenerMap>>,
+    pub cleanup_started: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -128,6 +128,8 @@ impl AppState {
             logs: Arc::new(parking_lot::RwLock::new(Vec::new())),
             event_tx,
             started_at: Instant::now(),
+            listeners: Arc::new(tokio::sync::Mutex::new(crate::ports::ListenerMap::new())),
+            cleanup_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 

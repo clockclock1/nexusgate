@@ -22,6 +22,14 @@ hub_data_port = 7101
 hub_token = "change-me-hub-token"
 hub_server_id = "default"
 
+# Edge 直连数据口（访客隧道优先走这里，失败再回退 Hub :7101）
+data_port = 7001
+# 公网部署时改为公网 IP，例如 data_advertise = "203.0.113.10"
+# 本机联调且 hub_host 为 127.0.0.1 时可省略（自动广告 127.0.0.1:7001）
+# data_advertise = "127.0.0.1"
+tcp_nodelay = true
+tcp_buffer_bytes = 2097152
+
 # 虚拟网 Overlay Server（与 admin 平级；管理流量，非访客穿透）
 [overlay]
 enabled = true

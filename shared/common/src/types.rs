@@ -212,6 +212,9 @@ pub struct RouteRule {
     pub node_id: NodeId,
     pub service_id: String,
     pub local_addr: String,
+    /// Server↔edge data port issued by admin (one per mapping).
+    #[serde(default)]
+    pub data_port: Option<u16>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]

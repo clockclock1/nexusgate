@@ -52,6 +52,20 @@ pub struct ServerConfig {
     #[serde(default)]
     pub hub_server_id: Option<String>,
 
+    /// TCP data plane: edge dials here for direct tunnels (skip Hub :7101).
+    #[serde(default = "default_data_port")]
+    pub data_port: u16,
+    /// Host (or `host:port`) advertised to edges for direct dial.
+    /// If only a host is given, `data_port` is appended.
+    #[serde(default)]
+    pub data_advertise: Option<String>,
+    /// TCP_NODELAY on tunnel sockets (true = lower latency for small packets).
+    #[serde(default = "default_tcp_nodelay")]
+    pub tcp_nodelay: bool,
+    /// SO_RCVBUF / SO_SNDBUF hint in bytes (0 = leave OS default).
+    #[serde(default = "default_tcp_buffer_bytes")]
+    pub tcp_buffer_bytes: usize,
+
     /// Virtual overlay (management mesh). Server is an equal Overlay Server.
     #[serde(default)]
     pub overlay: p2p_overlay::OverlayConfig,
@@ -59,8 +73,6 @@ pub struct ServerConfig {
     // ---- legacy fields (ignored; kept so old toml still loads) ----
     #[serde(default)]
     pub control_port: Option<u16>,
-    #[serde(default)]
-    pub data_port: Option<u16>,
     #[serde(default)]
     pub data_quic_port: Option<u16>,
     #[serde(default)]
@@ -110,6 +122,15 @@ fn default_hub_control_port() -> u16 {
 fn default_hub_data_port() -> u16 {
     7101
 }
+fn default_data_port() -> u16 {
+    7001
+}
+fn default_tcp_nodelay() -> bool {
+    true
+}
+fn default_tcp_buffer_bytes() -> usize {
+    p2p_transport::DEFAULT_TCP_BUFFER_BYTES
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -133,6 +154,10 @@ impl Default for ServerConfig {
             hub_data_port: default_hub_data_port(),
             hub_token: None,
             hub_server_id: None,
+            data_port: default_data_port(),
+            data_advertise: None,
+            tcp_nodelay: default_tcp_nodelay(),
+            tcp_buffer_bytes: default_tcp_buffer_bytes(),
             overlay: {
                 let mut o = p2p_overlay::OverlayConfig::default();
                 o.enabled = true;
@@ -143,7 +168,6 @@ impl Default for ServerConfig {
                 o
             },
             control_port: None,
-            data_port: None,
             data_quic_port: None,
             data_kcp_port: None,
             data_transport: None,
@@ -171,6 +195,30 @@ impl ServerConfig {
             TransportKind::Quic => self.gateway_quic_port,
             TransportKind::Kcp => self.gateway_kcp_port,
         }
+    }
+
+    /// Endpoint string advertised to edges (`host:port`), if configured.
+    /// When unset and hub is loopback, defaults to `127.0.0.1:data_port`.
+    pub fn advertised_data_endpoint(&self) -> Option<String> {
+        if let Some(raw) = self
+            .data_advertise
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            return if raw.contains(':') {
+                Some(raw.to_string())
+            } else {
+                Some(format!("{}:{}", raw, self.data_port))
+            };
+        }
+        if let Some(hub) = self.hub_host.as_ref() {
+            let h = hub.trim();
+            if h == "127.0.0.1" || h == "localhost" || h == "::1" {
+                return Some(format!("127.0.0.1:{}", self.data_port));
+            }
+        }
+        None
     }
 
     pub fn load(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {

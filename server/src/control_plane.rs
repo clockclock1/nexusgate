@@ -229,6 +229,7 @@ pub async fn send_connect(
         purpose: p2p_common::PeerPathPurpose::Data,
         prefer_p2p: true,
         local_addr: Some(local_addr.into()),
+        data_port: None,
     })?;
     Ok(())
 }

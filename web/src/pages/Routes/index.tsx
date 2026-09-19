@@ -100,6 +100,12 @@ export default function RoutesPage() {
     { title: '路由 ID', dataIndex: 'route_id', ellipsis: true, render: (v) => <code>{v}</code> },
     { title: '名称', dataIndex: 'name' },
     { title: '公网端口', dataIndex: 'public_port', width: 100 },
+    {
+      title: '通讯端口',
+      dataIndex: 'data_port',
+      width: 110,
+      render: (v: number | null | undefined) => v ?? '待下发',
+    },
     { title: '协议', dataIndex: 'protocol', width: 80 },
     { title: '节点', dataIndex: 'node_name', render: (v, r) => v || r.node_id },
     { title: '服务', dataIndex: 'service_name', render: (v, r) => v || r.service_id },
@@ -193,8 +199,15 @@ export default function RoutesPage() {
               placeholder="选择服务"
             />
           </Form.Item>
-          <Form.Item name="public_port" label="公网端口" rules={[{ required: true }]}>
-            <InputNumber min={1} max={65535} style={{ width: '100%' }} />
+          <Form.Item name="public_port" label="访客端口" rules={[{ required: true }]}>
+            <InputNumber min={1} max={65535} style={{ width: '100%' }} placeholder="外面的人访问服务端的端口" />
+          </Form.Item>
+          <Form.Item
+            name="data_port"
+            label="通讯端口"
+            extra="服务端和客户端之间的数据口。留空则由管理端自动分配；填了就按这个下发。一条映射一对端口。"
+          >
+            <InputNumber min={1} max={65535} style={{ width: '100%' }} placeholder="留空自动分配" />
           </Form.Item>
           <Form.Item name="protocol" label="协议" rules={[{ required: true }]}>
             <Select

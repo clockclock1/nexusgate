@@ -1,17 +1,20 @@
-//! Edge dial into Admin Hub: control plane + tunnel data via Hub relay.
+//! Edge dial into Admin Hub: control plane + tunnel data (direct-first, Hub fallback).
 
 use crate::config::EdgeConfig;
 use p2p_common::{PeerPathPurpose, PeerRole, ProtocolKind};
 use p2p_control::{ControlSession, HeartbeatConfig};
-use p2p_dataplane::copy_bidirectional;
+use p2p_dataplane::{copy_bidirectional, copy_bidirectional_tcp};
 use p2p_protocol::{encode_data_handshake, ControlMessage, HubPeerInfo};
-use p2p_transport::set_nodelay;
+use p2p_transport::tune_tcp;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+/// Edge tries direct dial this long before falling back to Hub relay.
+const DIRECT_DIAL_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub async fn run_hub_client(cfg: EdgeConfig) {
     let Some(hub_host) = cfg.hub_host.clone().filter(|h| !h.trim().is_empty()) else {
@@ -28,7 +31,7 @@ pub async fn run_hub_client(cfg: EdgeConfig) {
 
 async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
     let control_addr = format!("{}:{}", hub_host, cfg.hub_control_port);
-    let data_port = cfg.hub_data_port;
+    let hub_data_port = cfg.hub_data_port;
     let hub_token = cfg
         .hub_token
         .clone()
@@ -37,7 +40,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
 
     info!(%control_addr, node_id = %cfg.node_id, "connecting to admin hub");
     let stream = TcpStream::connect(&control_addr).await?;
-    set_nodelay(&stream, true);
+    tune_tcp(&stream, true, p2p_transport::DEFAULT_TCP_BUFFER_BYTES);
     let mut session = ControlSession::new(stream, HeartbeatConfig::default());
 
     let hello = session
@@ -75,6 +78,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
             version: Some(env!("CARGO_PKG_VERSION").into()),
             labels: vec!["role:edge".into()],
             transports: vec![],
+            data_endpoint: None,
         })
         .await?;
 
@@ -123,6 +127,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
                             purpose: PeerPathPurpose::Mgmt,
                             prefer_p2p: true,
                             local_addr: None,
+                            data_port: None,
                         })
                         .await;
                 }
@@ -134,6 +139,7 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
                 purpose,
                 peer_node_id,
                 local_addr,
+                data_endpoint,
                 ..
             } => {
                 info!(
@@ -142,17 +148,19 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
                     ?path,
                     ?purpose,
                     ?local_addr,
+                    ?data_endpoint,
                     "hub peer path offer"
                 );
                 let hub_host = hub_host.clone();
                 tokio::spawn(async move {
                     if let Err(e) = accept_peer_path(
                         hub_host,
-                        data_port,
+                        hub_data_port,
                         connection_id,
                         data_token,
                         purpose,
                         local_addr,
+                        data_endpoint,
                     )
                     .await
                     {
@@ -172,29 +180,77 @@ async fn run_once(cfg: &EdgeConfig, hub_host: &str) -> anyhow::Result<()> {
 
 async fn accept_peer_path(
     hub_host: String,
-    data_port: u16,
+    hub_data_port: u16,
     connection_id: String,
     data_token: String,
     purpose: PeerPathPurpose,
     local_addr: Option<String>,
+    data_endpoint: Option<String>,
 ) -> anyhow::Result<()> {
-    let mut data = TcpStream::connect(format!("{hub_host}:{data_port}")).await?;
-    set_nodelay(&data, true);
-    let hs = encode_data_handshake(&connection_id, &data_token);
-    data.write_all(&hs).await?;
     match purpose {
         PeerPathPurpose::Data => {
             let addr = local_addr.ok_or_else(|| anyhow::anyhow!("missing local_addr for tunnel"))?;
             let local = TcpStream::connect(&addr).await?;
-            set_nodelay(&local, true);
-            info!(%connection_id, %addr, "edge bridging hub data <-> local");
-            let _ = copy_bidirectional(local, data).await?;
+            tune_tcp(&local, true, p2p_transport::DEFAULT_TCP_BUFFER_BYTES);
+
+            // Prefer direct dial to server data plane; fall back to Hub :7101.
+            let data = match try_direct_data(&data_endpoint, &connection_id, &data_token).await {
+                Ok(s) => {
+                    info!(%connection_id, endpoint = ?data_endpoint, "edge bridging direct <-> local");
+                    s
+                }
+                Err(e) => {
+                    warn!(
+                        %connection_id,
+                        error = %e,
+                        "direct dial failed; falling back to hub-relay"
+                    );
+                    dial_hub_data(&hub_host, hub_data_port, &connection_id, &data_token).await?
+                }
+            };
+            let _ = copy_bidirectional_tcp(local, data).await?;
         }
         PeerPathPurpose::Mgmt => {
+            let data = dial_hub_data(&hub_host, hub_data_port, &connection_id, &data_token).await?;
             let (a, b) = tokio::io::duplex(8);
             let _ = copy_bidirectional(data, a).await;
             drop(b);
         }
     }
     Ok(())
+}
+
+async fn try_direct_data(
+    data_endpoint: &Option<String>,
+    connection_id: &str,
+    data_token: &str,
+) -> anyhow::Result<TcpStream> {
+    let endpoint = data_endpoint
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("no data_endpoint advertised"))?;
+    let connect = async {
+        let mut data = TcpStream::connect(&endpoint).await?;
+        tune_tcp(&data, true, p2p_transport::DEFAULT_TCP_BUFFER_BYTES);
+        let hs = encode_data_handshake(connection_id, data_token);
+        data.write_all(&hs).await?;
+        Ok::<_, anyhow::Error>(data)
+    };
+    tokio::time::timeout(DIRECT_DIAL_TIMEOUT, connect)
+        .await
+        .map_err(|_| anyhow::anyhow!("direct dial timeout to {endpoint}"))?
+}
+
+async fn dial_hub_data(
+    hub_host: &str,
+    hub_data_port: u16,
+    connection_id: &str,
+    data_token: &str,
+) -> anyhow::Result<TcpStream> {
+    let mut data = TcpStream::connect(format!("{hub_host}:{hub_data_port}")).await?;
+    tune_tcp(&data, true, p2p_transport::DEFAULT_TCP_BUFFER_BYTES);
+    let hs = encode_data_handshake(connection_id, data_token);
+    data.write_all(&hs).await?;
+    Ok(data)
 }

@@ -80,6 +80,11 @@ pub async fn init_db(config: &ServerConfig) -> anyhow::Result<SqlitePool> {
     .await
     .context("migrate schema")?;
 
+    // One mapping → one visitor port + one server↔edge data port (issued by admin).
+    let _ = sqlx::query("ALTER TABLE routes ADD COLUMN data_port INTEGER")
+        .execute(&pool)
+        .await;
+
     seed_admin(&pool, config).await?;
     Ok(pool)
 }
@@ -183,6 +188,11 @@ pub async fn load_routes_into(pool: &SqlitePool, table: &p2p_router::RouteTable)
             node_id: p2p_common::NodeId::new(r.get::<String, _>("node_id")),
             service_id,
             local_addr,
+            data_port: r
+                .try_get::<Option<i64>, _>("data_port")
+                .ok()
+                .flatten()
+                .map(|p| p as u16),
             enabled: true,
             priority: 0,
         };

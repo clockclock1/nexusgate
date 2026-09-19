@@ -1,9 +1,7 @@
 use clap::Parser;
-use p2p_common::TransportKind;
 use p2p_server::api;
 use p2p_server::config::ServerConfig;
 use p2p_server::db;
-use p2p_server::gateway;
 use p2p_server::state::AppState;
 use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
@@ -36,52 +34,26 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("hub_host is required: server has no local control plane; dial Admin Hub");
     }
     tracing::info!(
-        gateway_tcp = config.gateway_port,
-        gateway_quic = config.gateway_quic_port,
-        gateway_kcp = config.gateway_kcp_port,
         api_localhost = config.api_port,
         hub = ?config.hub_host,
-        "starting p2p-server (penetration node)"
+        "starting p2p-server (no public ports until admin issues a mapping)"
     );
 
     let pool = db::init_db(&config).await?;
     let state = AppState::new(config.clone(), std::path::PathBuf::from(&args.config), pool);
     db::load_routes_into(&state.db, &state.routes).await?;
 
-    let listen = config.listen.clone();
-    for t in config.enabled_gateway_transports() {
-        let port = config.gateway_port_for(t);
-        let addr: SocketAddr = format!("{listen}:{port}").parse()?;
-        let s = state.clone();
-        match t {
-            TransportKind::Tcp => {
-                tokio::spawn(async move {
-                    if let Err(e) = gateway::run_tcp_gateway(s, addr).await {
-                        tracing::error!(error = %e, "tcp gateway exited");
-                    }
-                });
-            }
-            TransportKind::Quic => {
-                tokio::spawn(async move {
-                    if let Err(e) = gateway::run_quic_gateway(s, addr).await {
-                        tracing::error!(error = %e, "quic gateway exited");
-                    }
-                });
-            }
-            TransportKind::Kcp => {
-                tokio::spawn(async move {
-                    if let Err(e) = gateway::run_kcp_gateway(s, addr).await {
-                        tracing::error!(error = %e, "kcp gateway exited");
-                    }
-                });
-            }
-        }
-    }
-
     let s_clean = state.clone();
     tokio::spawn(async move {
-        gateway::cleanup_hub_tunnels(s_clean).await;
+        p2p_server::gateway::cleanup_hub_tunnels(s_clean).await;
     });
+    let s_pc = state.clone();
+    tokio::spawn(async move {
+        p2p_server::data_plane::cleanup_pending(s_pc).await;
+    });
+    state
+        .cleanup_started
+        .store(true, std::sync::atomic::Ordering::SeqCst);
 
     let s_hub = state.clone();
     tokio::spawn(async move {

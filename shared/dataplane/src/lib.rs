@@ -6,4 +6,4 @@ pub mod relay;
 pub mod tcp;
 pub mod udp;
 
-pub use tcp::copy_bidirectional;
+pub use tcp::{copy_bidirectional, copy_bidirectional_tcp, COPY_BUF_SIZE};

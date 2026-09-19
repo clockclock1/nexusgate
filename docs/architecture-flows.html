@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NexusGate · 流量路径动态说明</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #e8f0f7;
+      --muted: #8aa3b8;
+      --dim: #4a657a;
+      --paper: #071622;
+      --panel: #0c2233;
+      --line: #1a3a52;
+      --cyan: #3de0c5;
+      --amber: #f0a202;
+      --rose: #ff6b6b;
+      --blue: #5b9fd4;
+      --ok: #6dd38a;
+      --glow: rgba(61, 224, 197, 0.35);
+      --radius: 14px;
+      --font-display: "Syne", system-ui, sans-serif;
+      --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      min-height: 100%;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(61, 224, 197, 0.08), transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, rgba(240, 162, 2, 0.06), transparent 50%),
+        var(--paper);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      line-height: 1.5;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(26, 58, 82, 0.35) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(26, 58, 82, 0.35) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+      opacity: 0.45;
+      z-index: 0;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 28px 20px 64px;
+    }
+
+    header {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 28px;
+      animation: rise 0.7s ease both;
+    }
+
+    .brand {
+      font-family: var(--font-display);
+      font-weight: 800;
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+    }
+
+    .brand span { color: var(--cyan); }
+
+    .lede {
+      color: var(--muted);
+      max-width: 62ch;
+      font-size: 0.92rem;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 22px 0 18px;
+      animation: rise 0.7s 0.08s ease both;
+    }
+
+    .tab, .ctrl {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      padding: 10px 14px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s, color 0.2s, transform 0.15s;
+    }
+
+    .tab:hover, .ctrl:hover { border-color: var(--cyan); transform: translateY(-1px); }
+    .tab.active {
+      background: rgba(61, 224, 197, 0.12);
+      border-color: var(--cyan);
+      color: var(--cyan);
+      box-shadow: 0 0 0 1px rgba(61, 224, 197, 0.2), 0 0 24px var(--glow);
+    }
+
+    .ctrl.primary {
+      background: var(--cyan);
+      color: #042018;
+      border-color: var(--cyan);
+      font-weight: 600;
+    }
+
+    .ctrl:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.35fr 0.9fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(12, 34, 51, 0.95), rgba(8, 24, 36, 0.98));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      animation: rise 0.7s 0.12s ease both;
+    }
+
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .card-head h2 {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .badge {
+      font-size: 0.72rem;
+      color: var(--amber);
+      border: 1px solid rgba(240, 162, 2, 0.35);
+      background: rgba(240, 162, 2, 0.08);
+      padding: 4px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .stage {
+      position: relative;
+      height: min(52vh, 460px);
+      min-height: 360px;
+      padding: 12px;
+    }
+
+    svg.topo {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .node-box {
+      fill: #0a1c2b;
+      stroke: var(--line);
+      stroke-width: 1.5;
+      rx: 12;
+    }
+
+    .node-box.hot {
+      stroke: var(--cyan);
+      filter: drop-shadow(0 0 8px var(--glow));
+    }
+
+    .node-title {
+      fill: var(--ink);
+      font-family: var(--font-display);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .node-sub {
+      fill: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .wire {
+      fill: none;
+      stroke: var(--dim);
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-dasharray: 6 8;
+      opacity: 0.55;
+      transition: stroke 0.25s, opacity 0.25s, stroke-width 0.25s;
+    }
+
+    .wire.active {
+      stroke: var(--cyan);
+      opacity: 1;
+      stroke-width: 2.6;
+      stroke-dasharray: none;
+      filter: drop-shadow(0 0 6px var(--glow));
+    }
+
+    .wire.fallback.active {
+      stroke: var(--amber);
+      filter: drop-shadow(0 0 6px rgba(240, 162, 2, 0.35));
+    }
+
+    .wire.visitor.active {
+      stroke: var(--blue);
+      filter: drop-shadow(0 0 6px rgba(91, 159, 212, 0.4));
+    }
+
+    .pkt {
+      fill: var(--cyan);
+      opacity: 0;
+      filter: drop-shadow(0 0 6px var(--glow));
+    }
+
+    .pkt.amber { fill: var(--amber); }
+    .pkt.blue { fill: var(--blue); }
+
+    .port-chip {
+      fill: rgba(61, 224, 197, 0.1);
+      stroke: rgba(61, 224, 197, 0.35);
+      stroke-width: 1;
+      rx: 4;
+    }
+
+    .port-text {
+      fill: var(--cyan);
+      font-size: 9px;
+      font-family: var(--font-mono);
+    }
+
+    .side {
+      display: grid;
+      gap: 12px;
+      animation: rise 0.7s 0.18s ease both;
+    }
+
+    .steps {
+      list-style: none;
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      max-height: 420px;
+      overflow: auto;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.02);
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .step .n {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .step h3 {
+      font-family: var(--font-display);
+      font-size: 0.92rem;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+
+    .step p { color: var(--muted); font-size: 0.78rem; }
+
+    .step.active {
+      border-color: rgba(61, 224, 197, 0.45);
+      background: rgba(61, 224, 197, 0.08);
+    }
+
+    .step.active .n {
+      background: var(--cyan);
+      color: #042018;
+      border-color: var(--cyan);
+    }
+
+    .step.done .n {
+      background: rgba(109, 211, 138, 0.15);
+      border-color: rgba(109, 211, 138, 0.4);
+      color: var(--ok);
+    }
+
+    .legend {
+      padding: 14px 16px 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    .legend h3 {
+      font-family: var(--font-display);
+      font-size: 0.95rem;
+      margin-bottom: 10px;
+    }
+
+    .legend dl {
+      display: grid;
+      gap: 8px;
+    }
+
+    .legend dt {
+      color: var(--cyan);
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .legend dd {
+      color: var(--muted);
+      font-size: 0.76rem;
+      margin-left: 0;
+      padding-left: 0;
+      margin-bottom: 4px;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 16px 14px;
+    }
+
+    .hint {
+      margin-top: 18px;
+      color: var(--dim);
+      font-size: 0.75rem;
+      animation: rise 0.7s 0.22s ease both;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">NexusGate <span>流量路径</span></div>
+      <p class="lede">
+        两层互不混用：<strong style="color:var(--ink)">管理流</strong>负责面板、注册与配置；
+        <strong style="color:var(--ink)">数据流</strong>负责访客穿透。点 Tab 切换，点播放逐步看包怎么走。
+      </p>
+    </header>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-flow="mgmt" role="tab" aria-selected="true">管理流 Management</button>
+      <button class="tab" data-flow="data" role="tab" aria-selected="false">数据流 Data（直连优先）</button>
+      <button class="tab" data-flow="fallback" role="tab" aria-selected="false">数据流 · Hub 回退</button>
+    </div>
+
+    <div class="layout">
+      <section class="card">
+        <div class="card-head">
+          <h2 id="flowTitle">管理流</h2>
+          <span class="badge" id="flowBadge">Layer A · Overlay / Hub</span>
+        </div>
+        <div class="stage">
+          <svg class="topo" id="topo" viewBox="0 0 640 420" aria-label="拓扑动画"></svg>
+        </div>
+        <div class="controls">
+          <button class="ctrl primary" id="btnPlay">▶ 逐步播放</button>
+          <button class="ctrl" id="btnReset">重置</button>
+          <button class="ctrl" id="btnAuto">自动连播</button>
+        </div>
+      </section>
+
+      <aside class="side">
+        <section class="card">
+          <div class="card-head">
+            <h2>步骤</h2>
+            <span class="badge" id="stepCounter">0 / 0</span>
+          </div>
+          <ol class="steps" id="steps"></ol>
+        </section>
+
+        <section class="legend">
+          <h3 id="legendTitle">这条路径在干什么</h3>
+          <dl id="legendBody"></dl>
+        </section>
+      </aside>
+    </div>
+
+    <p class="hint">
+      提示：公网部署请给 Server 配置 <code>data_advertise</code> 并放行 TCP <code>7001</code>；
+      直连失败约 2–4 秒后自动回退 Admin Hub <code>:7101</code>。
+    </p>
+  </div>
+
+  <script>
+    const NODES = {
+      visitor: { x: 36, y: 170, w: 108, h: 64, title: "访客", sub: "Internet" },
+      admin:   { x: 250, y: 36, w: 140, h: 72, title: "p2p-admin", sub: "面板 :8088 · Hub" },
+      server:  { x: 250, y: 168, w: 140, h: 78, title: "p2p-server", sub: "公网映射口" },
+      edge:    { x: 460, y: 168, w: 140, h: 78, title: "p2p-edge", sub: "内网客户端" },
+      local:   { x: 460, y: 310, w: 140, h: 64, title: "本地服务", sub: "127.0.0.1:8000" },
+    };
+
+    const FLOWS = {
+      mgmt: {
+        title: "管理流",
+        badge: "Layer A · Overlay / Hub",
+        legend: [
+          ["目标", "面板改配置、查节点、Edge 上报本地服务 —— 不搬运访客业务字节。"],
+          ["优先", "Overlay 虚拟网（UDP 51820）MgmtReq → Server 本机 API :3000。"],
+          ["兜底", "Hub 控制口 TCP 7100 上的 MGMT_FORWARD。"],
+          ["注意", "访客永远不走这条管理通道。"],
+        ],
+        wires: [
+          { id: "w1", d: "M320 108 L320 168", cls: "" },
+          { id: "w2", d: "M390 204 L460 204", cls: "" },
+          { id: "w3", d: "M320 108 C400 108, 430 140, 460 180", cls: "fallback" },
+        ],
+        ports: [
+          { x: 268, y: 118, t: ":8088" },
+          { x: 292, y: 148, t: "51820" },
+          { x: 268, y: 252, t: "API :3000" },
+          { x: 400, y: 188, t: "VIP mesh" },
+        ],
+        hot: ["admin", "server", "edge"],
+        steps: [
+          {
+            title: "打开管理面板",
+            desc: "浏览器访问 Admin :8088，登录后调 /api。",
+            wires: [], nodes: ["admin"], pkt: null,
+          },
+          {
+            title: "优先走 Overlay 管理通道",
+            desc: "Admin 经虚拟网 MgmtReq 打到 Server 节点（VIP，如 10.88.0.2）。",
+            wires: ["w1"], nodes: ["admin", "server"], pkt: { wire: "w1", color: "cyan" },
+          },
+          {
+            title: "Server 本机 API",
+            desc: "Server 只在 127.0.0.1:3000 提供管理 API，不对外暴露。",
+            wires: ["w1"], nodes: ["server"], pkt: null,
+          },
+          {
+            title: "Edge 上报服务",
+            desc: "Edge 经 Overlay CtrlRegisterService 注册 local_addr；Hub REGISTER_SERVICE 作备份。",
+            wires: ["w2"], nodes: ["edge", "server"], pkt: { wire: "w2", color: "cyan" },
+          },
+          {
+            title: "Hub 控制兜底（可选）",
+            desc: "Overlay 不通时，走 Admin Hub :7100 的 MGMT_FORWARD。",
+            wires: ["w3"], nodes: ["admin", "edge"], pkt: { wire: "w3", color: "amber" },
+          },
+        ],
+      },
+      data: {
+        title: "数据流 · 直连优先",
+        badge: "Layer B · Gateway → :7001",
+        legend: [
+          ["目标", "外面的人访问 Server 公网端口，流量转到 Edge 本机服务。"],
+          ["建连信令", "Server 经 Hub :7100 发 OpenPeerPath / PeerPathOffer（只传令牌与地址）。"],
+          ["数据面", "Edge 直连 Server TCP :7001，双向拷贝（Linux 可用 splice）。"],
+          ["收益", "业务字节不再经过 Admin :7101，少一跳用户态中转。"],
+        ],
+        wires: [
+          { id: "v1", d: "M144 202 L250 202", cls: "visitor" },
+          { id: "c1", d: "M320 168 C320 120, 320 90, 320 108", cls: "fallback" },
+          { id: "c2", d: "M390 72 C430 72, 500 72, 530 168", cls: "fallback" },
+          { id: "d1", d: "M390 204 L460 204", cls: "" },
+          { id: "d2", d: "M530 246 L530 310", cls: "" },
+        ],
+        ports: [
+          { x: 168, y: 178, t: ":8080" },
+          { x: 300, y: 90, t: "Hub :7100" },
+          { x: 400, y: 188, t: "data :7001" },
+          { x: 548, y: 270, t: "local" },
+        ],
+        hot: ["visitor", "server", "edge", "local", "admin"],
+        steps: [
+          {
+            title: "访客打到公网口",
+            desc: "TCP/QUIC/KCP 进入 Server 映射口（默认 TCP 8080）。",
+            wires: ["v1"], nodes: ["visitor", "server"], pkt: { wire: "v1", color: "blue" },
+          },
+          {
+            title: "控制面协商路径",
+            desc: "Server → Hub OpenPeerPath；Hub 给双方 PeerPathOffer（含 data_endpoint 与 token）。",
+            wires: ["c1", "c2"], nodes: ["server", "admin", "edge"], pkt: { wire: "c1", color: "amber" },
+          },
+          {
+            title: "Edge 直连 Server :7001",
+            desc: "Edge 用 token 握手连上 Server 数据面（约 2s 内成功则走直连）。",
+            wires: ["d1"], nodes: ["edge", "server"], pkt: { wire: "d1", color: "cyan" },
+          },
+          {
+            title: "Edge 拨本地服务",
+            desc: "同时连接配置里的 local_addr（如 127.0.0.1:8000）。",
+            wires: ["d2"], nodes: ["edge", "local"], pkt: { wire: "d2", color: "cyan" },
+          },
+          {
+            title: "端到端双向转发",
+            desc: "访客 ↔ Server gateway ↔ :7001 ↔ Edge ↔ 本地服务。Admin 不在数据路径上。",
+            wires: ["v1", "d1", "d2"], nodes: ["visitor", "server", "edge", "local"], pkt: { wire: "d1", color: "cyan" },
+          },
+        ],
+      },
+      fallback: {
+        title: "数据流 · Hub 回退",
+        badge: "Layer B · 经 :7101 中转",
+        legend: [
+          ["何时触发", "Edge 连不上 Server :7001（防火墙 / 未配 data_advertise 等）。"],
+          ["时序", "Edge 直连超时 ≈2s；Server 等待 ≈4s 后双方改拨 Hub :7101。"],
+          ["路径", "访客 ↔ Server ↔ Admin Hub :7101 ↔ Edge ↔ 本地服务。"],
+          ["代价", "多一跳用户态拷贝，延迟与吞吐通常差于直连。"],
+        ],
+        wires: [
+          { id: "v1", d: "M144 202 L250 202", cls: "visitor" },
+          { id: "h1", d: "M320 168 L320 108", cls: "fallback" },
+          { id: "h2", d: "M390 72 C450 72, 520 100, 530 168", cls: "fallback" },
+          { id: "d2", d: "M530 246 L530 310", cls: "" },
+        ],
+        ports: [
+          { x: 168, y: 178, t: ":8080" },
+          { x: 328, y: 120, t: "Hub :7101" },
+          { x: 548, y: 270, t: "local" },
+        ],
+        hot: ["visitor", "server", "admin", "edge", "local"],
+        steps: [
+          {
+            title: "访客仍进 Server 公网口",
+            desc: "入口不变，信令仍经 Hub :7100。",
+            wires: ["v1"], nodes: ["visitor", "server"], pkt: { wire: "v1", color: "blue" },
+          },
+          {
+            title: "直连失败",
+            desc: "Edge 拨 data_endpoint 超时或被拒；日志出现 direct dial failed。",
+            wires: [], nodes: ["edge", "server"], pkt: null,
+          },
+          {
+            title: "双方改拨 Hub :7101",
+            desc: "Server 与 Edge 用同一 connection_id / data_token 连上 Hub 数据口。",
+            wires: ["h1", "h2"], nodes: ["server", "admin", "edge"], pkt: { wire: "h1", color: "amber" },
+          },
+          {
+            title: "Hub 桥接两腿",
+            desc: "Admin 把两端 TCP 做 copy_bidirectional（Linux 可用 splice）。",
+            wires: ["h1", "h2"], nodes: ["admin"], pkt: { wire: "h2", color: "amber" },
+          },
+          {
+            title: "Edge 仍桥到本地服务",
+            desc: "完整路径：访客 → Server → Hub → Edge → 本地。模式标记 hub-relay。",
+            wires: ["v1", "h1", "h2", "d2"], nodes: ["visitor", "server", "admin", "edge", "local"], pkt: { wire: "d2", color: "cyan" },
+          },
+        ],
+      },
+    };
+
+    const svg = document.getElementById("topo");
+    const stepsEl = document.getElementById("steps");
+    let flowKey = "mgmt";
+    let stepIndex = -1;
+    let playing = false;
+    let autoTimer = null;
+
+    function pathLen(d) {
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", d);
+      return p.getTotalLength();
+    }
+
+    function renderTopo(flow) {
+      const showVisitor = flow.hot.includes("visitor");
+      const showLocal = flow.hot.includes("local");
+      let html = "";
+
+      for (const w of flow.wires) {
+        html += `<path id="${w.id}" class="wire ${w.cls || ""}" d="${w.d}" />`;
+      }
+
+      for (const [id, n] of Object.entries(NODES)) {
+        if (id === "visitor" && !showVisitor) continue;
+        if (id === "local" && !showLocal) continue;
+        if (id === "admin" && !flow.hot.includes("admin") && flowKey === "data") {
+          // still show admin faintly for control plane
+        }
+        html += `
+          <g id="node-${id}">
+            <rect class="node-box" x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" />
+            <text class="node-title" x="${n.x + 14}" y="${n.y + 28}">${n.title}</text>
+            <text class="node-sub" x="${n.x + 14}" y="${n.y + 48}">${n.sub}</text>
+          </g>`;
+      }
+
+      for (const p of flow.ports) {
+        const tw = p.t.length * 6.2 + 10;
+        html += `
+          <rect class="port-chip" x="${p.x}" y="${p.y}" width="${tw}" height="16" />
+          <text class="port-text" x="${p.x + 5}" y="${p.y + 11}">${p.t}</text>`;
+      }
+
+      html += `<circle id="pkt" class="pkt" r="5" cx="0" cy="0" />`;
+      svg.innerHTML = html;
+    }
+
+    function renderSteps(flow) {
+      stepsEl.innerHTML = flow.steps.map((s, i) => `
+        <li class="step" data-i="${i}">
+          <div class="n">${i + 1}</div>
+          <div>
+            <h3>${s.title}</h3>
+            <p>${s.desc}</p>
+          </div>
+        </li>`).join("");
+
+      stepsEl.querySelectorAll(".step").forEach((el) => {
+        el.addEventListener("click", () => {
+          stopAuto();
+          applyStep(Number(el.dataset.i));
+        });
+      });
+    }
+
+    function renderLegend(flow) {
+      document.getElementById("legendTitle").textContent = "这条路径在干什么";
+      document.getElementById("legendBody").innerHTML = flow.legend.map(([k, v]) =>
+        `<div><dt>${k}</dt><dd>${v}</dd></div>`
+      ).join("");
+    }
+
+    function clearAnim() {
+      svg.querySelectorAll(".wire").forEach((w) => w.classList.remove("active"));
+      svg.querySelectorAll(".node-box").forEach((n) => n.classList.remove("hot"));
+      const pkt = document.getElementById("pkt");
+      if (pkt) {
+        pkt.style.opacity = "0";
+        pkt.classList.remove("amber", "blue");
+      }
+    }
+
+    function animatePacket(wireId, color) {
+      const wire = document.getElementById(wireId);
+      const pkt = document.getElementById("pkt");
+      if (!wire || !pkt) return;
+      pkt.classList.remove("amber", "blue");
+      if (color === "amber") pkt.classList.add("amber");
+      if (color === "blue") pkt.classList.add("blue");
+      const len = wire.getTotalLength();
+      pkt.style.opacity = "1";
+      const t0 = performance.now();
+      const dur = 900;
+      function frame(t) {
+        const p = Math.min(1, (t - t0) / dur);
+        const pt = wire.getPointAtLength(p * len);
+        pkt.setAttribute("cx", pt.x);
+        pkt.setAttribute("cy", pt.y);
+        if (p < 1 && playing) requestAnimationFrame(frame);
+        else if (p >= 1) setTimeout(() => { pkt.style.opacity = "0.35"; }, 120);
+      }
+      requestAnimationFrame(frame);
+    }
+
+    function applyStep(i) {
+      const flow = FLOWS[flowKey];
+      stepIndex = i;
+      clearAnim();
+
+      const step = flow.steps[i];
+      if (!step) {
+        document.getElementById("stepCounter").textContent = `0 / ${flow.steps.length}`;
+        return;
+      }
+
+      for (const wid of step.wires) {
+        const el = document.getElementById(wid);
+        if (el) el.classList.add("active");
+      }
+      for (const nid of step.nodes) {
+        const box = document.querySelector(`#node-${nid} .node-box`);
+        if (box) box.classList.add("hot");
+      }
+      if (step.pkt) {
+        playing = true;
+        animatePacket(step.pkt.wire, step.pkt.color);
+      }
+
+      stepsEl.querySelectorAll(".step").forEach((el, idx) => {
+        el.classList.toggle("active", idx === i);
+        el.classList.toggle("done", idx < i);
+      });
+      document.getElementById("stepCounter").textContent = `${i + 1} / ${flow.steps.length}`;
+    }
+
+    function loadFlow(key) {
+      stopAuto();
+      flowKey = key;
+      const flow = FLOWS[key];
+      document.getElementById("flowTitle").textContent = flow.title;
+      document.getElementById("flowBadge").textContent = flow.badge;
+      document.querySelectorAll(".tab").forEach((t) => {
+        const on = t.dataset.flow === key;
+        t.classList.toggle("active", on);
+        t.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      renderTopo(flow);
+      renderSteps(flow);
+      renderLegend(flow);
+      stepIndex = -1;
+      clearAnim();
+      document.getElementById("stepCounter").textContent = `0 / ${flow.steps.length}`;
+    }
+
+    function nextStep() {
+      const flow = FLOWS[flowKey];
+      const next = stepIndex + 1;
+      if (next >= flow.steps.length) {
+        stopAuto();
+        return false;
+      }
+      applyStep(next);
+      return true;
+    }
+
+    function stopAuto() {
+      if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+      }
+      document.getElementById("btnAuto").textContent = "自动连播";
+    }
+
+    document.querySelectorAll(".tab").forEach((t) => {
+      t.addEventListener("click", () => loadFlow(t.dataset.flow));
+    });
+
+    document.getElementById("btnPlay").addEventListener("click", () => {
+      stopAuto();
+      if (!nextStep()) {
+        applyStep(0);
+      }
+    });
+
+    document.getElementById("btnReset").addEventListener("click", () => {
+      stopAuto();
+      loadFlow(flowKey);
+    });
+
+    document.getElementById("btnAuto").addEventListener("click", () => {
+      if (autoTimer) {
+        stopAuto();
+        return;
+      }
+      if (stepIndex < 0) applyStep(0);
+      document.getElementById("btnAuto").textContent = "停止连播";
+      autoTimer = setInterval(() => {
+        if (!nextStep()) stopAuto();
+      }, 1600);
+    });
+
+    loadFlow("mgmt");
+  </script>
+</body>
+</html>

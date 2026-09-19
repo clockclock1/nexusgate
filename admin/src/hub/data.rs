@@ -1,6 +1,7 @@
 use crate::hub::HubState;
-use p2p_dataplane::copy_bidirectional;
+use p2p_dataplane::copy_bidirectional_tcp;
 use p2p_protocol::parse_data_handshake;
+use p2p_transport::tune_tcp;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -19,6 +20,7 @@ pub async fn run_hub_data(state: HubState, addr: SocketAddr) -> anyhow::Result<(
     });
     loop {
         let (stream, peer) = listener.accept().await?;
+        tune_tcp(&stream, true, p2p_transport::DEFAULT_TCP_BUFFER_BYTES);
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_data(state, stream).await {
@@ -64,7 +66,7 @@ async fn handle_data(state: HubState, mut stream: TcpStream) -> anyhow::Result<(
     if let Some((peer, stream)) = maybe_pair {
         state.pending_paths.remove(&cid);
         info!(%cid, "hub relay bridging peers");
-        let _ = copy_bidirectional(peer, stream).await;
+        let _ = copy_bidirectional_tcp(peer, stream).await;
     }
     Ok(())
 }

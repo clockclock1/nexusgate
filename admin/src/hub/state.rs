@@ -12,6 +12,8 @@ pub struct HubPeerSession {
     pub role: PeerRole,
     pub name: Option<String>,
     pub version: Option<String>,
+    /// Server-advertised host edges should dial (`1.2.3.4`, no port).
+    pub advertise_host: Option<String>,
     pub connected_at: Instant,
     pub tx: mpsc::Sender<ControlMessage>,
 }
@@ -33,15 +35,18 @@ pub struct HubState {
     pub peers: Arc<DashMap<String, HubPeerSession>>,
     pub pending_paths: Arc<DashMap<String, PendingPeerPath>>,
     pub mgmt_waiters: Arc<DashMap<String, oneshot::Sender<ControlMessage>>>,
+    /// First free port when a mapping omits `data_port`.
+    pub port_base: u16,
 }
 
 impl HubState {
-    pub fn new(hub_token: String) -> Self {
+    pub fn new(hub_token: String, port_base: u16) -> Self {
         Self {
             token: Arc::new(hub_token),
             peers: Arc::new(DashMap::new()),
             pending_paths: Arc::new(DashMap::new()),
             mgmt_waiters: Arc::new(DashMap::new()),
+            port_base,
         }
     }
 
@@ -92,7 +97,9 @@ impl HubState {
         self.broadcast_roster();
     }
 
-    /// Prefer P2P (scaffold → fail) then open a Hub relay path between two peers.
+    /// Open a path between two peers. Hole-punch is not wired yet → Relay.
+    /// For `purpose=data`, include the server's advertised `data_endpoint` so the
+    /// edge can try a direct dial before falling back to Hub `:7101`.
     pub async fn open_peer_path(
         &self,
         from_id: &str,
@@ -101,6 +108,7 @@ impl HubState {
         purpose: PeerPathPurpose,
         prefer_p2p: bool,
         local_addr: Option<String>,
+        data_port: Option<u16>,
     ) -> anyhow::Result<()> {
         if !self.peers.contains_key(from_id) {
             anyhow::bail!("source peer offline");
@@ -109,19 +117,23 @@ impl HubState {
             anyhow::bail!("target peer offline");
         }
 
-        let mut path = PathKind::Relay;
-        if prefer_p2p {
-            // Scaffold: real hole-punch not wired yet; fall back to relay.
-            let p2p_ok = p2p_p2p::probe_path(p2p_p2p::PathProbeRequest {
-                connection_id: request_id.to_string(),
-                path: PathKind::P2p,
-                probe_id: request_id.to_string(),
-            })
-            .await
-            .map(|r| r.success)
-            .unwrap_or(false);
-            path = p2p_p2p::select_path(p2p_ok, true);
-        }
+        // Hole-punch not implemented: skip probe_path (was sleeping 1ms per connect).
+        let _ = prefer_p2p;
+        let path = PathKind::Relay;
+
+        let advertise_host = self
+            .peers
+            .get(from_id)
+            .and_then(|p| p.advertise_host.clone())
+            .or_else(|| {
+                self.peers
+                    .get(target_id)
+                    .and_then(|p| p.advertise_host.clone())
+            });
+        let data_endpoint = match (purpose, advertise_host, data_port) {
+            (PeerPathPurpose::Data, Some(host), Some(port)) => Some(format!("{host}:{port}")),
+            _ => None,
+        };
 
         let connection_id = uuid::Uuid::new_v4().to_string();
         let data_token = p2p_security::generate_data_token();
@@ -149,6 +161,7 @@ impl HubState {
             purpose,
             candidates: vec![],
             local_addr: local_addr.clone(),
+            data_endpoint: data_endpoint.clone(),
         };
         let offer_b = ControlMessage::PeerPathOffer {
             request_id: request_id.to_string(),
@@ -159,6 +172,7 @@ impl HubState {
             purpose,
             candidates: vec![],
             local_addr,
+            data_endpoint,
         };
         if !self.send_to(from_id, offer_a) {
             anyhow::bail!("failed to notify source");
@@ -167,6 +181,36 @@ impl HubState {
             anyhow::bail!("failed to notify target");
         }
         Ok(())
+    }
+
+    /// Fill missing data ports and push the listen plan to the reporting server.
+    pub fn issue_ports(&self, server_id: &str, mut mappings: Vec<p2p_protocol::PortBinding>) {
+        let mut used: std::collections::HashSet<u16> = mappings
+            .iter()
+            .filter_map(|m| m.data_port)
+            .chain(mappings.iter().map(|m| m.visitor_port))
+            .collect();
+        let mut next = self.port_base.max(1);
+        for m in mappings.iter_mut().filter(|m| m.enabled && m.data_port.is_none()) {
+            while used.contains(&next) {
+                next = next.saturating_add(1);
+                if next == 0 {
+                    break;
+                }
+            }
+            if next == 0 {
+                tracing::warn!(route = %m.route_id, "no free data port");
+                continue;
+            }
+            m.data_port = Some(next);
+            used.insert(next);
+            next = next.saturating_add(1);
+        }
+        let n = mappings.len();
+        tracing::info!(%server_id, mappings = n, "issuing port plan");
+        if !self.send_to(server_id, ControlMessage::ApplyPorts { bindings: mappings }) {
+            tracing::warn!(%server_id, "failed to push port plan");
+        }
     }
 
     /// Forward HTTP management call to an online server peer; wait for result.
