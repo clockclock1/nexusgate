@@ -697,7 +697,10 @@ ask_overlay_common() {
   if [[ "$def_role" == "server" ]]; then
     OV_FIXED_VIP="$(ask_input "overlay.fixed_vip" "$(toml_get_section "$cfg" overlay fixed_vip "$def_vip")" 1)"
   fi
-  OV_BOOT="$(ask_input "对等/引导 Overlay 主机（host，空=不填 bootstrap）" "$def_boot" 1)"
+  # 只填 IP/主机名，不要带端口；脚本会拼成 host:overlay.port。
+  # 管理端自己当 Overlay Server 时可留空；服务端/客户端填「跑管理端的那台机器」。
+  # require=0：允许空（空 = 配置里不写 bootstrap）。
+  OV_BOOT="$(ask_input "Overlay 引导机 IP（只填主机，不要带端口；管理端自己可直接回车留空）" "$def_boot" 0)"
   OV_CREATE_TUN=false
   if ask_yn "创建系统 TUN 网卡 create_tun（需 CAP_NET_ADMIN）" "N"; then
     OV_CREATE_TUN=true

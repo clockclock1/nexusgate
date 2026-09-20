@@ -33,12 +33,14 @@
 | `8088` | 管理端 | TCP | 网页面板 | 你要远程打开面板就放行 |
 | `7100` | 管理端 | TCP | 服务端/客户端接入（控制） | **必须**让服务端和客户端能连到 |
 | `7101` | 管理端 | TCP | 访客隧道中转（直连失败时回退） | **必须**（和 7100 一样） |
-| `7001` | 服务端 | TCP | 客户端直连数据口（优先于 7101） | **必须**让客户端能连到 |
+| 映射「通讯口」 | 服务端 | TCP | 客户端直连数据口（优先于 7101）；由管理端按映射下发 | **必须**让客户端能连到（装好映射后再放行对应口） |
 | `51820` | 管理端 | UDP | 内部联络（打洞/管理消息） | 建议放行，失败会退回 7100 |
-| `8080` | 服务端 | TCP | 访客入口（映射口） | 给外面的人用就放行 |
+| 映射「访客口」 | 服务端 | TCP | 访客入口；由管理端按映射下发（常见如 `8080`） | 给外面的人用就放行 |
 | `8443` | 服务端 | UDP | 访客入口（QUIC） | 用到再放行 |
 | `8444` | 服务端 | UDP | 访客入口（KCP） | 用到再放行 |
 | `3000` | 服务端 | TCP | 本机管理接口 | **不要**对公网开放，只绑 `127.0.0.1` |
+
+服务端进程启动时默认**不**监听访客口/通讯口；面板保存映射后，管理端才会下发端口并让服务端绑定。
 
 默认管理员：`admin` / `admin123`（装好后立刻改掉）。
 
@@ -54,78 +56,212 @@
 
 ## 推荐安装（Linux）
 
-在公网机和管理机上安装管理命令：
+安装靠两段脚本：`install-ng.sh` 只负责装上管理命令 `ng`；真正装三个端用 `ng install-web` / `install-server` / `install-client`。下面按屏幕上**出现的每一句提示**写「按回车用默认」还是「必须改成什么」。
+
+建议顺序：**先管理端 → 再服务端 → 面板建节点与映射 → 最后客户端**。
+
+下文举例用两种常见摆法（把 IP 换成你的）：
+
+| 摆法 | 管理端 | 服务端 | 客户端 |
+|------|--------|--------|--------|
+| **同机** | 公网机 `1.2.3.4` | 同一台 `1.2.3.4` | 内网机 |
+| **分机** | 管理机 `10.0.0.10` | 公网机 `1.2.3.4` | 内网机 |
+
+口令先想好两串，三端保持一致：
+
+- `hub_token`：例如 `MyHubSecret2026`
+- `overlay.token`：例如 `MyOverlaySecret2026`（若关闭 overlay 可不管）
+
+---
+
+### 「Overlay 引导机 IP」是什么？（旧文案：对等/引导 Overlay 主机）
+
+这和访客穿透 **不是一回事**。
+
+- **Hub（`hub_host` / 7100）**：服务端、客户端连管理端，用来上报节点、下发映射、走隧道控制。**穿透主路径靠这个。**
+- **Overlay（虚拟网）**：可选的内部联络网（打洞/管理消息）。启用后，服务端和客户端需要知道「去哪台机器加入这张虚拟网」。
+
+「Overlay 引导机 IP」= **跑着管理端 overlay 的那台机器的 IP**（只填主机名或 IP，**不要带端口**）。脚本会自动写成配置里的：
+
+```toml
+bootstrap = ["这台IP:51820"]   # 端口用你填的 overlay.port
+```
+
+| 你在装谁 | 怎么填 |
+|----------|--------|
+| **管理端** `install-web` | 管理端自己就是 Overlay 的「房主」，**直接回车留空**（不要写自己的 IP） |
+| **服务端** `install-server` | 同机装管理端 → 填 `127.0.0.1`；管理端在别的机器 → 填管理机 IP（如 `10.0.0.10`） |
+| **客户端** `install-client` | 填**管理机 IP**（内网要能访问到；同机极罕见才用 `127.0.0.1`） |
+
+注意：
+
+- 填的是 **IP/主机名**，不是 `IP:端口`。端口在上一项 `overlay.port` 里填。
+- 同机既跑管理端又跑服务端时：管理端 overlay 用 `51820`；服务端 overlay 端口请改成 `51821`（避免抢同一个 UDP 口），但引导机仍填 `127.0.0.1`（去连管理端的 `51820`）。
+- 访客打公网端口 **不依赖** overlay。不会配就先在三端都选「不启用 overlay」，只把 Hub 配通也能穿透。
+
+---
+
+### 0. 先装管理命令 `ng`
+
+在**每一台**要装组件的 Linux 上执行一次：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh | sudo bash
-sudo ng
 ```
 
-### 1. 管理端
+国内慢时：
+
+```bash
+NG_MIRROR=https://ghproxy.net/ curl -fsSL \
+  https://ghproxy.net/https://raw.githubusercontent.com/clockclock1/nexusgate/main/scripts/install-ng.sh \
+  | sudo -E bash
+```
+
+这一步没有交互问答，脚本自动：检查 root → 必要时装 curl → 下载并校验 `ng` → 装到 `/usr/local/bin/ng`。之后：
+
+```bash
+sudo ng          # 数字菜单
+sudo ng help
+```
+
+---
+
+### 1. 管理端：`sudo ng install-web`
+
+在管理机执行。二进制下载、建用户、写 systemd 都是自动的；下面只列**要你回答的提示**。
 
 ```bash
 sudo ng install-web
 ```
 
-向导里确认：面板端口 `8088`、`hub_token`、内部联络 token、固定内部地址（默认 `10.88.0.1`）。
+屏上出现什么 → 你怎么填：
 
-浏览器打开 `http://<管理机IP>:8088`。
+| # | 屏上提示（大意） | 直接回车？ | 建议填写 |
+|---|------------------|------------|----------|
+| 1 | `监听地址 listen [0.0.0.0]` | 可以 | 要远程打开面板就保持 `0.0.0.0`；只本机浏览器访问可改 `127.0.0.1` |
+| 2 | `面板端口 listen_port [8088]` | 可以 | 保持 `8088`，防火墙放行该口 |
+| 3 | `API 反代地址 api_upstream [127.0.0.1:3000]` | 可以 | **同机**稍后装服务端：保持 `127.0.0.1:3000`。**分机**且服务端 API 只在服务端本机时：仍先填 `127.0.0.1:3000`（正常走 Hub 管理通道，不靠直连 3000） |
+| 4 | `hub_token [change-me-hub-token]` | **不要原样用** | 改成你的口令，如 `MyHubSecret2026`（服务端、客户端必须相同） |
+| 5 | `启用 overlay [Y/n]` | 可选 | 要虚拟网：`Y`；搞不清 / 只要穿透：`n`（选 n 则跳过后面 overlay 项） |
+| 6 | `overlay.port [51820]` | 可以 | 保持 `51820`（管理端占用这个 UDP） |
+| 7 | `overlay.subnet_cidr [10.88.0.0/16]` | 可以 | 保持默认 |
+| 8 | `overlay.token（三端一致）` | **不要原样用** | 改成 `MyOverlaySecret2026`，三端相同 |
+| 9 | `overlay.node_id [admin]` | 可以 | 保持 `admin` |
+| 10 | `overlay.fixed_vip [10.88.0.1]` | 可以 | 保持 `10.88.0.1`（管理端在虚拟网里的固定地址） |
+| 11 | `Overlay 引导机 IP…（管理端自己可直接回车留空）` | **直接回车** | 管理端是房主，**留空**。不要填本机 IP |
+| 12 | `创建系统 TUN… [y/N]` | 回车 = N | 保持 N（不建系统网卡） |
+| 13 | `…立即启动管理面板? [Y/n]` | 回车 = Y | 选 Y 立刻启动 |
 
-### 2. 服务端（公网机）
+装完访问：`http://<管理机IP>:8088`。  
+登录账号是**服务端**向导里的 `admin` / `admin123`（服务端还没装时面板能开，登录要等服务端起来）。
+
+防火墙放行：`8088/tcp`、`7100/tcp`、`7101/tcp`；启用了 overlay 再放行 `51820/udp`。
+
+配置文件：`/opt/nexusgate/web/config/admin.toml`。
+
+---
+
+### 2. 服务端：`sudo ng install-server`
+
+在公网机（或要给人访问的那台）执行。
 
 ```bash
 sudo ng install-server
 ```
 
-必填：
+**记住**：进程起来时还不会听访客口；等面板建好映射、管理端下发端口后才会绑定。
 
-- `hub_host` = 管理机 IP（管理端和服务端同一台就填 `127.0.0.1`）
-- `hub_token` 与管理端相同
-- `hub_server_id` = `default`（和面板里的服务端 id 一致）
-- 内部联络 `bootstrap` = `管理机IP:51820`
-- 映射口默认 TCP `8080`
+| # | 屏上提示（大意） | 直接回车？ | 建议填写 |
+|---|------------------|------------|----------|
+| 1 | `监听地址 listen [0.0.0.0]` | 可以 | 保持 `0.0.0.0` |
+| 2 | `穿透 TCP 端口 gateway_port [8080]` | 可以 | 面板建映射时常用 `8080`；也可以后在面板改 |
+| 3 | `穿透 QUIC 端口 [8443]` | 可以 | 暂不用 QUIC 也回车 |
+| 4 | `穿透 KCP 端口 [8444]` | 可以 | 同上 |
+| 5 | `本机 API 端口 api_port [3000]` | 可以 | 保持 `3000`（只监听 127.0.0.1，不要对公网开） |
+| 6 | `数据库 URL …` | 可以 | 保持默认 sqlite 路径 |
+| 7 | `JWT 密钥 jwt_secret […]` | 可以 | 脚本已随机生成，回车即可；生产可再改长密钥 |
+| 8 | `JWT 有效期秒数 [86400]` | 可以 | 一天，回车即可 |
+| 9 | `管理员用户名 admin_user [admin]` | 可以 | 面板登录名 |
+| 10 | `管理员密码 admin_password [admin123]` | **建议改** | 改成自己的密码，浏览器登录面板用这个 |
+| 11 | `最大连接数 [100000]` | 可以 | 回车 |
+| 12 | `启用中继 enable_relay [Y/n]` | 回车 = Y | 保持 Y |
+| 13 | `启用 P2P enable_p2p [Y/n]` | 回车 = Y | 保持 Y |
+| 14 | `hub_host [127.0.0.1]` | 看摆法 | **同机**：`127.0.0.1`。**分机**：填管理机 IP，如 `10.0.0.10` |
+| 15 | `hub_control_port [7100]` | 可以 | 与管理端一致，回车 |
+| 16 | `hub_data_port [7101]` | 可以 | 与管理端一致，回车 |
+| 17 | `hub_token […]` | **必须对齐** | 填管理端同一串，如 `MyHubSecret2026` |
+| 18 | `hub_server_id [default]` | 可以 | 保持 `default`（与管理端 `[[servers]] id` 一致） |
+| 19 | `启用 overlay [Y/n]` | 与管理端一致 | 管理端开了就 Y；管理端关了就 n |
+| 20 | `overlay.port [51820]` | **同机要改** | **同机**：改成 `51821`（别和管理端抢 51820）。**分机**：可保持 `51820` |
+| 21 | `overlay.subnet_cidr` | 可以 | 与管理端相同，回车 |
+| 22 | `overlay.token` | **必须对齐** | 与管理端相同，如 `MyOverlaySecret2026` |
+| 23 | `overlay.node_id` | 可以 | 默认会用 `default`（与 hub_server_id 一致），回车 |
+| 24 | `overlay.fixed_vip [10.88.0.2]` | 可以 | 保持 `10.88.0.2` |
+| 25 | `Overlay 引导机 IP […]` | 看摆法 | **同机**：回车用默认 `127.0.0.1`（或手填）。**分机**：填管理机 IP `10.0.0.10`。只填 IP，不要 `:51820` |
+| 26 | `创建系统 TUN [y/N]` | 回车 = N | 保持 N |
+| 27 | `…立即启动服务端? [Y/n]` | 回车 = Y | 选 Y |
 
-管理接口只在本机 `127.0.0.1:3000`，面板通过管理通道访问它，不必把 3000 暴露到公网。
+配置文件：`/opt/nexusgate/server/config/server.toml`。  
+装完后面板 Hub 里应能看到服务端 `default` 在线。
 
-### 3. 在面板里登记客户端
+---
 
-1. 登录面板
-2. 「节点」里新建节点，记下返回的 **node_id** 和 **token**（token 只显示一次）
-3. 新建映射：公网端口 `8080` → 这个节点 → 服务 id（要和客户端配置里的 `service_id` 相同，例如 `web`）
+### 3. 面板里建节点和映射（装客户端前）
 
-如果创建映射时客户端还没上报本地地址，等客户端上线后再保存一次映射（或在面板里改一下再保存）。否则隧道可能连到错误的本机地址。
+1. 打开 `http://<管理机IP>:8088`，用服务端的用户名/密码登录。
+2. 「节点」→ 新建 → **马上抄下 `node_id` 和 `token`**（token 往往只显示一次）。
+3. 「映射」→ 新建：
+   - 访客端口：例如 `8080`（给人访问的公网口）
+   - 通讯端口：可**留空**让管理端自动分配
+   - 节点：刚建的那个
+   - `service_id`：例如 `web`（下面客户端本地服务要写同一个）
+4. 客户端还没上线就建了映射的话：等客户端上线后再保存一次映射。
 
-### 4. 客户端（内网机）
+---
+
+### 4. 客户端：`sudo ng install-client`
+
+在内网业务机执行。
 
 ```bash
 sudo ng install-client
 ```
 
-必填：
+| # | 屏上提示（大意） | 直接回车？ | 建议填写 |
+|---|------------------|------------|----------|
+| 1 | `节点 ID node_id […]` | **不要用默认** | 面板里抄的 `node_id` |
+| 2 | `节点 Token token` | **必填** | 面板里抄的 `token` |
+| 3 | `节点显示名 name […]` | 随意 | 例如 `家里的NAS` |
+| 4 | `hub_host [127.0.0.1]` | **几乎都要改** | 填**管理机 IP**（同机摆法才用 `127.0.0.1`）。例：`1.2.3.4` 或 `10.0.0.10` |
+| 5 | `hub_control_port [7100]` | 可以 | 回车 |
+| 6 | `hub_data_port [7101]` | 可以 | 回车 |
+| 7 | `hub_token（空则回退用节点 token）` | **建议填** | 与管理端相同的 `MyHubSecret2026`；真留空则脚本用节点 token |
+| 8 | `启用 overlay [Y/n]` | 与管理端一致 | 管理端开了就 Y |
+| 9 | `overlay.port [51820]` | 可以 | 客户端自己的 UDP 口，一般保持 `51820`（和引导机上的管理端端口可以相同，不在同一台机） |
+| 10 | `overlay.subnet_cidr` | 可以 | 与管理端相同 |
+| 11 | `overlay.token` | **必须对齐** | 与管理端相同 |
+| 12 | `overlay.node_id` | 可以 | 默认已是上面的 node_id，回车 |
+| 13 | `Overlay 引导机 IP […]` | **填管理机** | 与 `hub_host` 相同：管理机 IP。只填 IP，不要带端口 |
+| 14 | `创建系统 TUN [y/N]` | 回车 = N | 保持 N |
+| 15 | `service_id [web]` | 对齐映射 | 与面板映射的 service_id 一致，常用 `web` |
+| 16 | `name [local-web]` | 可以 | 回车或改显示名 |
+| 17 | `protocol [tcp]` | 可以 | 回车 |
+| 18 | `local_addr (本机回源) [127.0.0.1:8000]` | 按实情 | 改成这台机真实服务，如 `127.0.0.1:8000`；先本机 `curl` 能通 |
+| 19 | `继续添加下一个本地服务? [y/N]` | 回车 = N | 只要一个服务就 N；多个就 Y 再填一组 |
+| 20 | `…立即启动客户端? [Y/n]` | 回车 = Y | 选 Y |
 
-- `node_id` / `token`：面板里刚创建的
-- `hub_host` = 管理机 IP
-- `hub_token` 与管理端相同
-- 内部联络 `bootstrap` = `管理机IP:51820`
-- `[[services]]`：`service_id` 与映射一致，`local_addr` 是这台机器上的真实服务，例如 `127.0.0.1:8000`
+配置文件：`/opt/nexusgate/client/config/edge.toml`。
+
+---
 
 ### 5. 验证
 
-面板「服务端节点 / Hub」里应能看到服务端和客户端都在线。
+1. 面板 Hub：服务端、客户端都在线。  
+2. 服务端 `ss -lnt`：出现映射的访客口和通讯口。  
+3. 内网机：`curl http://127.0.0.1:8000/`（换成你的 local_addr）。  
+4. 外网：`curl http://<公网机IP>:<访客端口>/` 应等于内网内容。
 
-在内网机上先确认本地服务本身能开：
-
-```bash
-curl http://127.0.0.1:8000/
-```
-
-再从任意能访问公网机的地方访问映射口：
-
-```bash
-curl http://<公网机IP>:8080/
-```
-
-应得到内网服务的内容。
+---
 
 ### 日常命令
 
@@ -136,24 +272,37 @@ sudo ng restart client
 sudo ng update-server
 sudo ng update-client
 sudo ng update-web
+sudo ng config-server          # 重新走服务端向导
+sudo ng config-client
+sudo ng config-web
 sudo ng show-config
 sudo ng logs server
-sudo ng logs client
+sudo ng logs client -n 100
 sudo ng logs web
+sudo ng mirror
+sudo ng test-mirror
 ```
 
 文件位置：
 
 ```text
-/opt/nexusgate/bin/p2p-admin
-/opt/nexusgate/bin/p2p-server
-/opt/nexusgate/bin/p2p-edge
+/opt/nexusgate/bin/p2p-admin | p2p-server | p2p-edge
 /opt/nexusgate/web/config/admin.toml
 /opt/nexusgate/server/config/server.toml
 /opt/nexusgate/client/config/edge.toml
+/etc/systemd/system/nexusgate-{web,server,edge}.service
 ```
 
-国内下载 GitHub 可加镜像，见下文「GitHub 镜像」。
+卸载：
+
+```bash
+sudo ng uninstall-client
+sudo ng uninstall-server
+sudo ng uninstall-web
+sudo ng uninstall-all          # 需输入 YES
+```
+
+国内下载见下文「GitHub 镜像」。
 
 ---
 
