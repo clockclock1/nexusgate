@@ -508,6 +508,7 @@ EOF
 
 configure_web_interactive() {
   ensure_dirs
+  begin_wizard
   echo
   echo -e "${BOLD}======== 管理面板配置向导 ========${NC}"
   echo "  二进制: ${WEB_BIN}（内嵌前端，反代 /api 与 /ws）"
@@ -534,6 +535,7 @@ configure_web_interactive() {
   fi
 
   write_web_config_file "$listen" "$listen_port" "$api_upstream" "$hub_token" "$OV_BLOCK"
+  end_wizard
   echo
   log "管理面板配置已保存: ${WEB_CFG}"
   echo -e "  访问地址: http://${listen}:${listen_port}"
@@ -558,19 +560,57 @@ install_web_bin_from_release() {
 }
 
 # ---------- 交互式配置（逐项提问，不直接打开编辑器）----------
+# 向导中可随时 Ctrl+C：不写配置（写文件只在全部答完后），下次重跑同一命令从头填。
+
+abort_wizard() {
+  trap - INT TERM
+  echo >&2
+  err "已中断。本次配置未写入（向导未完成前不会保存）。"
+  err "下次重新执行同一安装/配置命令，将从头开始填写。"
+  exit 130
+}
+
+begin_wizard() {
+  trap 'abort_wizard' INT TERM
+  echo -e "  ${YELLOW}提示: 随时 Ctrl+C 可中断；下次重跑本命令将从头填写。${NC}"
+}
+
+end_wizard() {
+  trap - INT TERM
+}
+
+# 在 $(ask_input) 子壳里不能只 exit（只退出子壳）；要通知主 shell。
+_wizard_interrupted() {
+  if [[ ${BASH_SUBSHELL:-0} -gt 0 ]]; then
+    kill -INT $$ 2>/dev/null || true
+    exit 130
+  fi
+  abort_wizard
+}
 
 ask_input() {
   # ask_input "提示" "默认值"(可空) [require=1]
+  # 提示打到 stderr，避免被 $(ask_input) 吃进变量。
   local prompt="$1"
-  local def="${2:-}"
+  local def="${2-}"
   local require="${3:-0}"
-  local ans
+  local ans rc
   while true; do
     if [[ -n "$def" ]]; then
-      read -r -p "  ${prompt} [${def}]: " ans || true
-      ans="${ans:-$def}"
+      printf '  %s [%s]: ' "$prompt" "$def" >&2
+    elif [[ "$require" != "1" ]]; then
+      printf '  %s [直接回车=留空]: ' "$prompt" >&2
     else
-      read -r -p "  ${prompt}: " ans || true
+      printf '  %s: ' "$prompt" >&2
+    fi
+    IFS= read -r ans
+    rc=$?
+    if ((rc != 0)); then
+      _wizard_interrupted
+    fi
+    # 有默认值时，回车 = 用默认；无默认且可选时，回车 = 空字符串
+    if [[ -z "$ans" && -n "$def" ]]; then
+      ans="$def"
     fi
     if [[ -n "$ans" || "$require" != "1" ]]; then
       printf '%s' "$ans"
@@ -584,9 +624,14 @@ ask_yn() {
   # ask_yn "提示" "Y|N"  -> 返回 0=yes
   local prompt="$1"
   local def="${2:-Y}"
-  local hint ans
+  local hint ans rc
   if [[ "$def" =~ ^[Yy]$ ]]; then hint="Y/n"; else hint="y/N"; fi
-  read -r -p "  ${prompt} [${hint}]: " ans || true
+  printf '  %s [%s]: ' "$prompt" "$hint" >&2
+  IFS= read -r ans
+  rc=$?
+  if ((rc != 0)); then
+    _wizard_interrupted
+  fi
   ans="${ans:-$def}"
   [[ "$ans" =~ ^[Yy]$ ]]
 }
@@ -698,9 +743,9 @@ ask_overlay_common() {
     OV_FIXED_VIP="$(ask_input "overlay.fixed_vip" "$(toml_get_section "$cfg" overlay fixed_vip "$def_vip")" 1)"
   fi
   # 只填 IP/主机名，不要带端口；脚本会拼成 host:overlay.port。
-  # 管理端自己当 Overlay Server 时可留空；服务端/客户端填「跑管理端的那台机器」。
-  # require=0：允许空（空 = 配置里不写 bootstrap）。
-  OV_BOOT="$(ask_input "Overlay 引导机 IP（只填主机，不要带端口；管理端自己可直接回车留空）" "$def_boot" 0)"
+  # 管理端自己当 Overlay Server：直接回车留空（require=0，提示会显示 [直接回车=留空]）。
+  # 服务端/客户端：填跑管理端的那台机器（有默认时回车即用默认）。
+  OV_BOOT="$(ask_input "Overlay 引导机 IP（只填主机名或 IP，不要带端口）" "$def_boot" 0)"
   OV_CREATE_TUN=false
   if ask_yn "创建系统 TUN 网卡 create_tun（需 CAP_NET_ADMIN）" "N"; then
     OV_CREATE_TUN=true
@@ -759,6 +804,7 @@ EOF
 
 configure_server_interactive() {
   ensure_dirs
+  begin_wizard
   echo
   echo -e "${BOLD}======== 服务端配置向导 ========${NC}"
   echo "  只开放穿透映射口；管控出站连接管理端 Hub（必填）"
@@ -825,6 +871,7 @@ hub_server_id = \"$(toml_escape "$hub_server_id")\"
     "$listen" "$gateway_port" "$gateway_quic_port" "$gateway_kcp_port" "$api_port" \
     "$database_url" "$jwt_secret" "$jwt_ttl" "$admin_user" "$admin_password" \
     "$max_connections" "$enable_relay" "$enable_p2p" "$hub_block" "$OV_BLOCK"
+  end_wizard
 
   echo
   log "服务端配置已保存: ${SERVER_CFG}"
@@ -862,6 +909,7 @@ EOF
 
 configure_client_interactive() {
   ensure_dirs
+  begin_wizard
   echo
   echo -e "${BOLD}======== 客户端配置向导 ========${NC}"
   echo "  控制面 = 管理端 Hub（必填）；不开公网端口"
@@ -882,7 +930,8 @@ configure_client_interactive() {
   hub_host="$(ask_input "hub_host" "$(toml_get "$CLIENT_CFG" hub_host "127.0.0.1")" 1)"
   hub_control_port="$(ask_input "hub_control_port" "$(toml_get "$CLIENT_CFG" hub_control_port 7100)" 1)"
   hub_data_port="$(ask_input "hub_data_port" "$(toml_get "$CLIENT_CFG" hub_data_port 7101)" 1)"
-  hub_token="$(ask_input "hub_token（空则回退用节点 token）" "$(toml_get "$CLIENT_CFG" hub_token "")" 1)"
+  # 可留空：留空则用节点 token
+  hub_token="$(ask_input "hub_token（可留空=改用节点 token）" "$(toml_get "$CLIENT_CFG" hub_token "")" 0)"
   if [[ -z "$hub_token" ]]; then
     hub_token="$token"
   fi
@@ -925,6 +974,7 @@ local_addr = \"$(toml_escape "$laddr")\"
 
   write_client_config_file "$node_id" "$token" "$name" "$services_block" \
     "$hub_host" "$hub_control_port" "$hub_data_port" "$hub_token" "$OV_BLOCK"
+  end_wizard
 
   echo
   log "客户端配置已保存: ${CLIENT_CFG}"
